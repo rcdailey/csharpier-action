@@ -1,0 +1,55 @@
+repos:
+  # Official pre-commit hooks (6.1k stars, actively maintained)
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^dist/
+      - id: end-of-file-fixer
+        exclude: ^dist/
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+
+  # ESLint mirror (actively maintained, updated Oct 2025)
+  - repo: https://github.com/pre-commit/mirrors-eslint
+    rev: v9.38.0
+    hooks:
+      - id: eslint
+        files: \.(js|ts|tsx?)$
+        types: [file]
+        additional_dependencies:
+          - eslint@9.38.0
+          - '@typescript-eslint/eslint-plugin@8.46.2'
+          - '@typescript-eslint/parser@8.32.1'
+          - eslint-config-prettier@10.1.8
+
+  # GitHub Actions workflow linter (3.4k stars, actively maintained)
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.8
+    hooks:
+      - id: actionlint
+
+  # Local hooks for project-specific checks
+  - repo: local
+    hooks:
+      - id: prettier
+        name: Prettier
+        entry: npx prettier --write --ignore-unknown
+        language: system
+        types_or: [javascript, jsx, ts, tsx, json, yaml, markdown]
+        exclude: ^dist/
+      - id: tsc-check
+        name: TypeScript type check
+        entry: npx tsc --noEmit
+        language: system
+        types: [ts]
+        pass_filenames: false
+      - id: bundle-check
+        name: Check dist/ is current
+        entry: bash -c 'npm run package && git diff --exit-code dist/'
+        language: system
+        pass_filenames: false
+        files: ^src/

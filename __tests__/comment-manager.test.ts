@@ -16,7 +16,10 @@ import { tmpdir } from 'os'
 
 describe('Comment Manager', () => {
   let mockAPI: MockGitHubAPI
-  let mockContext: any
+  let mockContext: {
+    repo: { owner: string; repo: string }
+    payload: { pull_request: { number: number; head: { sha: string } } }
+  }
   let testDir: string
 
   beforeEach(async () => {
@@ -496,4 +499,3 @@ Run \`dotnet csharpier format ${testFilePath}\` to fix the formatting.`
     })
   })
 })
-
