@@ -4,7 +4,6 @@
 
 import * as core from '@actions/core'
 import * as exec from '@actions/exec'
-import type { CSharpierResult } from './types.js'
 
 /**
  * Install CSharpier as a global dotnet tool
@@ -21,94 +20,61 @@ export async function installCSharpier(version: string): Promise<void> {
   }
 
   await exec.exec('dotnet', args)
+
   core.info('CSharpier installed successfully')
 }
 
 /**
- * Run CSharpier check on the specified files
+ * Format multiple files with CSharpier using pipe-files mode
  *
- * @param files - Array of file paths to check
- * @returns CSharpierResult containing exit code, output, and list of unformatted files
+ * @param files - Array of file paths to format
+ * @returns Map of file path to formatted content
  */
-export async function checkFiles(files: string[]): Promise<CSharpierResult> {
+export async function formatFiles(
+  files: string[]
+): Promise<Map<string, string>> {
   if (files.length === 0) {
-    core.info('No files to check')
-    return {
-      exitCode: 0,
-      stdout: '',
-      stderr: '',
-      unformattedFiles: []
-    }
+    core.info('No files to format')
+    return new Map<string, string>()
   }
 
-  core.info(`Checking ${files.length} file(s) with CSharpier`)
+  core.info(`Formatting ${files.length} file(s) with CSharpier`)
+
+  const fs = await import('fs/promises')
+  const csharpierPath = `${process.env.HOME}/.dotnet/tools/csharpier`
+
+  // Build input: path\u0003content\u0003path\u0003content\u0003
+  const inputParts: string[] = []
+  for (const filePath of files) {
+    const content = await fs.readFile(filePath, 'utf8')
+    inputParts.push(filePath, '\u0003', content, '\u0003')
+  }
+  const input = inputParts.join('')
 
   let stdout = ''
-  let stderr = ''
-
   const options: exec.ExecOptions = {
     ignoreReturnCode: true,
+    input: Buffer.from(input),
     listeners: {
       stdout: (data: Buffer) => {
         stdout += data.toString()
-      },
-      stderr: (data: Buffer) => {
-        stderr += data.toString()
       }
     }
   }
 
-  // Run: dotnet csharpier check <files...>
-  const args = ['csharpier', 'check', ...files]
-  const exitCode = await exec.exec('dotnet', args, options)
+  // Run: csharpier pipe-files
+  const exitCode = await exec.exec(csharpierPath, ['pipe-files'], options)
 
-  core.debug(`CSharpier exit code: ${exitCode}`)
-  core.debug(`CSharpier stdout: ${stdout}`)
-  if (stderr) {
-    core.debug(`CSharpier stderr: ${stderr}`)
+  core.debug(`CSharpier pipe-files exit code: ${exitCode}`)
+
+  // Parse output: split on \u0003 delimiter
+  const results = stdout.split('\u0003').filter((s) => s.length > 0)
+
+  // Map files to their formatted content
+  const formattedMap = new Map<string, string>()
+  for (let i = 0; i < files.length && i < results.length; i++) {
+    formattedMap.set(files[i], results[i])
   }
 
-  const unformattedFiles = parseCSharpierOutput(stdout, exitCode)
-
-  return {
-    exitCode,
-    stdout,
-    stderr,
-    unformattedFiles
-  }
-}
-
-/**
- * Parse CSharpier output to extract list of unformatted files
- *
- * @param output - The stdout from CSharpier
- * @param exitCode - The exit code from CSharpier
- * @returns Array of file paths that are not formatted
- */
-function parseCSharpierOutput(output: string, exitCode: number): string[] {
-  // Exit code 0 means all files are formatted
-  if (exitCode === 0) {
-    return []
-  }
-
-  // Exit code 1 means there are unformatted files
-  // Exit code 2+ means there was an error
-  if (exitCode >= 2) {
-    return []
-  }
-
-  // Parse the output to find unformatted files
-  // CSharpier outputs each unformatted file on a separate line
-  const lines = output.split('\n').map((line) => line.trim())
-
-  // Filter out empty lines and informational messages
-  const unformattedFiles = lines.filter(
-    (line) =>
-      line.length > 0 &&
-      !line.includes('Checking') &&
-      !line.includes('files') &&
-      !line.includes('formatted')
-  )
-
-  return unformattedFiles
+  return formattedMap
 }

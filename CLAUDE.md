@@ -3,6 +3,21 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with
 code in this repository.
 
+## ABSOLUTE DIRECTIVES
+
+After changes:
+
+- ALWAYS run `npm run bundle`
+- ALWAYS execute tests with `npm test`
+
+Testing Requirements:
+
+- Test BEHAVIOR, not implementation
+- Integration test approach utilizes ports and adapters (hexagonal architecture)
+- No overlap between new or existing tests
+- Test is not brittle, flakey, or high maintenance (tied up in implementation
+  detail)
+
 ## Project Overview
 
 This is a GitHub Action that runs CSharpier formatting checks on pull requests

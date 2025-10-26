@@ -4,13 +4,14 @@
 
 import * as core from '@actions/core'
 import * as github from '@actions/github'
-import { installCSharpier, checkFiles } from './csharpier-runner.js'
+import { installCSharpier, formatFiles } from './csharpier-runner.js'
 import { getChangedCSharpFiles } from './pr-files.js'
 import {
   getExistingComments,
-  createViolationComment,
+  createViolationComments,
   resolveFixedComments
 } from './comment-manager.js'
+import { OctokitGitHubAPI } from './github-api.js'
 
 /**
  * Main function for the action
@@ -41,6 +42,7 @@ export async function run(): Promise<void> {
 
     // Create GitHub API client
     const octokit = github.getOctokit(githubToken)
+    const api = new OctokitGitHubAPI(octokit)
     const context = github.context
 
     // Install CSharpier
@@ -56,50 +58,61 @@ export async function run(): Promise<void> {
     }
 
     // Get existing comments
-    const existingComments = await getExistingComments(octokit, context)
+    const existingComments = await getExistingComments(api, context)
 
-    // Run CSharpier check
+    // Format all changed files in one batch
     const filePaths = changedFiles.map((f) => f.path)
-    const result = await checkFiles(filePaths)
+    const formattedMap = await formatFiles(filePaths)
 
-    // Handle CSharpier errors (exit code 2+)
-    if (result.exitCode >= 2) {
-      core.error('CSharpier encountered an error:')
-      core.error(result.stderr || result.stdout)
-      core.setFailed('CSharpier check failed with errors')
-      return
+    // Identify unformatted files by comparing original vs formatted
+    const fs = await import('fs/promises')
+    const unformattedFiles: string[] = []
+    for (const filePath of filePaths) {
+      const originalContent = await fs.readFile(filePath, 'utf8')
+      const formattedContent = formattedMap.get(filePath)
+
+      if (formattedContent && originalContent !== formattedContent) {
+        unformattedFiles.push(filePath)
+      }
     }
 
     // Determine which files are fixed (were unformatted before, but formatted now)
     const previouslyUnformattedFiles = existingComments.map((c) => c.path)
     const fixedFiles = previouslyUnformattedFiles.filter(
-      (file) => !result.unformattedFiles.includes(file)
+      (file) => !unformattedFiles.includes(file)
     )
 
     // Resolve comments for fixed files
     if (fixedFiles.length > 0) {
-      await resolveFixedComments(octokit, context, existingComments, fixedFiles)
+      await resolveFixedComments(api, context, existingComments, fixedFiles)
     }
 
-    // Create comments for new violations
+    // Create or update comments for violations
     const commitSha = context.payload.pull_request!.head.sha
-    const existingCommentPaths = existingComments.map((c) => c.path)
 
-    for (const file of result.unformattedFiles) {
-      // Only create a comment if one doesn't already exist for this file
-      if (!existingCommentPaths.includes(file)) {
-        await createViolationComment(octokit, context, file, commitSha)
-      }
+    for (const file of unformattedFiles) {
+      // Find existing comments for this file
+      const fileComments = existingComments.filter((c) => c.path === file)
+      const formattedContent = formattedMap.get(file)!
+
+      await createViolationComments(
+        api,
+        context,
+        file,
+        commitSha,
+        formattedContent,
+        fileComments
+      )
     }
 
     // Set outputs
-    const hasViolations = result.unformattedFiles.length > 0
+    const hasViolations = unformattedFiles.length > 0
     core.setOutput('violations-found', hasViolations.toString())
 
     // Report results
     if (hasViolations) {
       core.setFailed(
-        `Found ${result.unformattedFiles.length} file(s) with formatting violations`
+        `Found ${unformattedFiles.length} file(s) with formatting violations`
       )
     } else {
       core.info('All C# files are properly formatted!')

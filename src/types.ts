@@ -40,4 +40,6 @@ export interface ViolationComment {
   body: string
   /** Whether the comment is resolved */
   isResolved: boolean
+  /** Line number where the comment is placed */
+  line: number
 }

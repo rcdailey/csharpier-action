@@ -25,6 +25,7 @@ import require$$6 from 'string_decoder';
 import require$$0$7 from 'diagnostics_channel';
 import require$$2$3 from 'child_process';
 import require$$6$1 from 'timers';
+import { readFile } from 'fs/promises';
 
 var commonjsGlobal = typeof globalThis !== 'undefined' ? globalThis : typeof window !== 'undefined' ? window : typeof global !== 'undefined' ? global : typeof self !== 'undefined' ? self : {};
 
@@ -31268,77 +31269,47 @@ async function installCSharpier(version) {
     coreExports.info('CSharpier installed successfully');
 }
 /**
- * Run CSharpier check on the specified files
+ * Format multiple files with CSharpier using pipe-files mode
  *
- * @param files - Array of file paths to check
- * @returns CSharpierResult containing exit code, output, and list of unformatted files
+ * @param files - Array of file paths to format
+ * @returns Map of file path to formatted content
  */
-async function checkFiles(files) {
+async function formatFiles(files) {
     if (files.length === 0) {
-        coreExports.info('No files to check');
-        return {
-            exitCode: 0,
-            stdout: '',
-            stderr: '',
-            unformattedFiles: []
-        };
+        coreExports.info('No files to format');
+        return new Map();
     }
-    coreExports.info(`Checking ${files.length} file(s) with CSharpier`);
+    coreExports.info(`Formatting ${files.length} file(s) with CSharpier`);
+    const fs = await import('fs/promises');
+    const csharpierPath = `${process.env.HOME}/.dotnet/tools/csharpier`;
+    // Build input: path\u0003content\u0003path\u0003content\u0003
+    const inputParts = [];
+    for (const filePath of files) {
+        const content = await fs.readFile(filePath, 'utf8');
+        inputParts.push(filePath, '\u0003', content, '\u0003');
+    }
+    const input = inputParts.join('');
     let stdout = '';
-    let stderr = '';
     const options = {
         ignoreReturnCode: true,
+        input: Buffer.from(input),
         listeners: {
             stdout: (data) => {
                 stdout += data.toString();
-            },
-            stderr: (data) => {
-                stderr += data.toString();
             }
         }
     };
-    // Run: dotnet csharpier check <files...>
-    const args = ['csharpier', 'check', ...files];
-    const exitCode = await execExports.exec('dotnet', args, options);
-    coreExports.debug(`CSharpier exit code: ${exitCode}`);
-    coreExports.debug(`CSharpier stdout: ${stdout}`);
-    if (stderr) {
-        coreExports.debug(`CSharpier stderr: ${stderr}`);
+    // Run: csharpier pipe-files
+    const exitCode = await execExports.exec(csharpierPath, ['pipe-files'], options);
+    coreExports.debug(`CSharpier pipe-files exit code: ${exitCode}`);
+    // Parse output: split on \u0003 delimiter
+    const results = stdout.split('\u0003').filter((s) => s.length > 0);
+    // Map files to their formatted content
+    const formattedMap = new Map();
+    for (let i = 0; i < files.length && i < results.length; i++) {
+        formattedMap.set(files[i], results[i]);
     }
-    const unformattedFiles = parseCSharpierOutput(stdout, exitCode);
-    return {
-        exitCode,
-        stdout,
-        stderr,
-        unformattedFiles
-    };
-}
-/**
- * Parse CSharpier output to extract list of unformatted files
- *
- * @param output - The stdout from CSharpier
- * @param exitCode - The exit code from CSharpier
- * @returns Array of file paths that are not formatted
- */
-function parseCSharpierOutput(output, exitCode) {
-    // Exit code 0 means all files are formatted
-    if (exitCode === 0) {
-        return [];
-    }
-    // Exit code 1 means there are unformatted files
-    // Exit code 2+ means there was an error
-    if (exitCode >= 2) {
-        return [];
-    }
-    // Parse the output to find unformatted files
-    // CSharpier outputs each unformatted file on a separate line
-    const lines = output.split('\n').map((line) => line.trim());
-    // Filter out empty lines and informational messages
-    const unformattedFiles = lines.filter((line) => line.length > 0 &&
-        !line.includes('Checking') &&
-        !line.includes('files') &&
-        !line.includes('formatted'));
-    return unformattedFiles;
+    return formattedMap;
 }
 
 /**
@@ -31377,25 +31348,597 @@ async function getChangedCSharpFiles(octokit, context) {
     return csharpFiles;
 }
 
+class Diff {
+    diff(oldStr, newStr, 
+    // Type below is not accurate/complete - see above for full possibilities - but it compiles
+    options = {}) {
+        let callback;
+        if (typeof options === 'function') {
+            callback = options;
+            options = {};
+        }
+        else if ('callback' in options) {
+            callback = options.callback;
+        }
+        // Allow subclasses to massage the input prior to running
+        const oldString = this.castInput(oldStr, options);
+        const newString = this.castInput(newStr, options);
+        const oldTokens = this.removeEmpty(this.tokenize(oldString, options));
+        const newTokens = this.removeEmpty(this.tokenize(newString, options));
+        return this.diffWithOptionsObj(oldTokens, newTokens, options, callback);
+    }
+    diffWithOptionsObj(oldTokens, newTokens, options, callback) {
+        var _a;
+        const done = (value) => {
+            value = this.postProcess(value, options);
+            if (callback) {
+                setTimeout(function () { callback(value); }, 0);
+                return undefined;
+            }
+            else {
+                return value;
+            }
+        };
+        const newLen = newTokens.length, oldLen = oldTokens.length;
+        let editLength = 1;
+        let maxEditLength = newLen + oldLen;
+        if (options.maxEditLength != null) {
+            maxEditLength = Math.min(maxEditLength, options.maxEditLength);
+        }
+        const maxExecutionTime = (_a = options.timeout) !== null && _a !== void 0 ? _a : Infinity;
+        const abortAfterTimestamp = Date.now() + maxExecutionTime;
+        const bestPath = [{ oldPos: -1, lastComponent: undefined }];
+        // Seed editLength = 0, i.e. the content starts with the same values
+        let newPos = this.extractCommon(bestPath[0], newTokens, oldTokens, 0, options);
+        if (bestPath[0].oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
+            // Identity per the equality and tokenizer
+            return done(this.buildValues(bestPath[0].lastComponent, newTokens, oldTokens));
+        }
+        // Once we hit the right edge of the edit graph on some diagonal k, we can
+        // definitely reach the end of the edit graph in no more than k edits, so
+        // there's no point in considering any moves to diagonal k+1 any more (from
+        // which we're guaranteed to need at least k+1 more edits).
+        // Similarly, once we've reached the bottom of the edit graph, there's no
+        // point considering moves to lower diagonals.
+        // We record this fact by setting minDiagonalToConsider and
+        // maxDiagonalToConsider to some finite value once we've hit the edge of
+        // the edit graph.
+        // This optimization is not faithful to the original algorithm presented in
+        // Myers's paper, which instead pointlessly extends D-paths off the end of
+        // the edit graph - see page 7 of Myers's paper which notes this point
+        // explicitly and illustrates it with a diagram. This has major performance
+        // implications for some common scenarios. For instance, to compute a diff
+        // where the new text simply appends d characters on the end of the
+        // original text of length n, the true Myers algorithm will take O(n+d^2)
+        // time while this optimization needs only O(n+d) time.
+        let minDiagonalToConsider = -Infinity, maxDiagonalToConsider = Infinity;
+        // Main worker method. checks all permutations of a given edit length for acceptance.
+        const execEditLength = () => {
+            for (let diagonalPath = Math.max(minDiagonalToConsider, -editLength); diagonalPath <= Math.min(maxDiagonalToConsider, editLength); diagonalPath += 2) {
+                let basePath;
+                const removePath = bestPath[diagonalPath - 1], addPath = bestPath[diagonalPath + 1];
+                if (removePath) {
+                    // No one else is going to attempt to use this value, clear it
+                    // @ts-expect-error - perf optimisation. This type-violating value will never be read.
+                    bestPath[diagonalPath - 1] = undefined;
+                }
+                let canAdd = false;
+                if (addPath) {
+                    // what newPos will be after we do an insertion:
+                    const addPathNewPos = addPath.oldPos - diagonalPath;
+                    canAdd = addPath && 0 <= addPathNewPos && addPathNewPos < newLen;
+                }
+                const canRemove = removePath && removePath.oldPos + 1 < oldLen;
+                if (!canAdd && !canRemove) {
+                    // If this path is a terminal then prune
+                    // @ts-expect-error - perf optimisation. This type-violating value will never be read.
+                    bestPath[diagonalPath] = undefined;
+                    continue;
+                }
+                // Select the diagonal that we want to branch from. We select the prior
+                // path whose position in the old string is the farthest from the origin
+                // and does not pass the bounds of the diff graph
+                if (!canRemove || (canAdd && removePath.oldPos < addPath.oldPos)) {
+                    basePath = this.addToPath(addPath, true, false, 0, options);
+                }
+                else {
+                    basePath = this.addToPath(removePath, false, true, 1, options);
+                }
+                newPos = this.extractCommon(basePath, newTokens, oldTokens, diagonalPath, options);
+                if (basePath.oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
+                    // If we have hit the end of both strings, then we are done
+                    return done(this.buildValues(basePath.lastComponent, newTokens, oldTokens)) || true;
+                }
+                else {
+                    bestPath[diagonalPath] = basePath;
+                    if (basePath.oldPos + 1 >= oldLen) {
+                        maxDiagonalToConsider = Math.min(maxDiagonalToConsider, diagonalPath - 1);
+                    }
+                    if (newPos + 1 >= newLen) {
+                        minDiagonalToConsider = Math.max(minDiagonalToConsider, diagonalPath + 1);
+                    }
+                }
+            }
+            editLength++;
+        };
+        // Performs the length of edit iteration. Is a bit fugly as this has to support the
+        // sync and async mode which is never fun. Loops over execEditLength until a value
+        // is produced, or until the edit length exceeds options.maxEditLength (if given),
+        // in which case it will return undefined.
+        if (callback) {
+            (function exec() {
+                setTimeout(function () {
+                    if (editLength > maxEditLength || Date.now() > abortAfterTimestamp) {
+                        return callback(undefined);
+                    }
+                    if (!execEditLength()) {
+                        exec();
+                    }
+                }, 0);
+            }());
+        }
+        else {
+            while (editLength <= maxEditLength && Date.now() <= abortAfterTimestamp) {
+                const ret = execEditLength();
+                if (ret) {
+                    return ret;
+                }
+            }
+        }
+    }
+    addToPath(path, added, removed, oldPosInc, options) {
+        const last = path.lastComponent;
+        if (last && !options.oneChangePerToken && last.added === added && last.removed === removed) {
+            return {
+                oldPos: path.oldPos + oldPosInc,
+                lastComponent: { count: last.count + 1, added: added, removed: removed, previousComponent: last.previousComponent }
+            };
+        }
+        else {
+            return {
+                oldPos: path.oldPos + oldPosInc,
+                lastComponent: { count: 1, added: added, removed: removed, previousComponent: last }
+            };
+        }
+    }
+    extractCommon(basePath, newTokens, oldTokens, diagonalPath, options) {
+        const newLen = newTokens.length, oldLen = oldTokens.length;
+        let oldPos = basePath.oldPos, newPos = oldPos - diagonalPath, commonCount = 0;
+        while (newPos + 1 < newLen && oldPos + 1 < oldLen && this.equals(oldTokens[oldPos + 1], newTokens[newPos + 1], options)) {
+            newPos++;
+            oldPos++;
+            commonCount++;
+            if (options.oneChangePerToken) {
+                basePath.lastComponent = { count: 1, previousComponent: basePath.lastComponent, added: false, removed: false };
+            }
+        }
+        if (commonCount && !options.oneChangePerToken) {
+            basePath.lastComponent = { count: commonCount, previousComponent: basePath.lastComponent, added: false, removed: false };
+        }
+        basePath.oldPos = oldPos;
+        return newPos;
+    }
+    equals(left, right, options) {
+        if (options.comparator) {
+            return options.comparator(left, right);
+        }
+        else {
+            return left === right
+                || (!!options.ignoreCase && left.toLowerCase() === right.toLowerCase());
+        }
+    }
+    removeEmpty(array) {
+        const ret = [];
+        for (let i = 0; i < array.length; i++) {
+            if (array[i]) {
+                ret.push(array[i]);
+            }
+        }
+        return ret;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    castInput(value, options) {
+        return value;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    tokenize(value, options) {
+        return Array.from(value);
+    }
+    join(chars) {
+        // Assumes ValueT is string, which is the case for most subclasses.
+        // When it's false, e.g. in diffArrays, this method needs to be overridden (e.g. with a no-op)
+        // Yes, the casts are verbose and ugly, because this pattern - of having the base class SORT OF
+        // assume tokens and values are strings, but not completely - is weird and janky.
+        return chars.join('');
+    }
+    postProcess(changeObjects, 
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    options) {
+        return changeObjects;
+    }
+    get useLongestToken() {
+        return false;
+    }
+    buildValues(lastComponent, newTokens, oldTokens) {
+        // First we convert our linked list of components in reverse order to an
+        // array in the right order:
+        const components = [];
+        let nextComponent;
+        while (lastComponent) {
+            components.push(lastComponent);
+            nextComponent = lastComponent.previousComponent;
+            delete lastComponent.previousComponent;
+            lastComponent = nextComponent;
+        }
+        components.reverse();
+        const componentLen = components.length;
+        let componentPos = 0, newPos = 0, oldPos = 0;
+        for (; componentPos < componentLen; componentPos++) {
+            const component = components[componentPos];
+            if (!component.removed) {
+                if (!component.added && this.useLongestToken) {
+                    let value = newTokens.slice(newPos, newPos + component.count);
+                    value = value.map(function (value, i) {
+                        const oldValue = oldTokens[oldPos + i];
+                        return oldValue.length > value.length ? oldValue : value;
+                    });
+                    component.value = this.join(value);
+                }
+                else {
+                    component.value = this.join(newTokens.slice(newPos, newPos + component.count));
+                }
+                newPos += component.count;
+                // Common case
+                if (!component.added) {
+                    oldPos += component.count;
+                }
+            }
+            else {
+                component.value = this.join(oldTokens.slice(oldPos, oldPos + component.count));
+                oldPos += component.count;
+            }
+        }
+        return components;
+    }
+}
+
+class LineDiff extends Diff {
+    constructor() {
+        super(...arguments);
+        this.tokenize = tokenize;
+    }
+    equals(left, right, options) {
+        // If we're ignoring whitespace, we need to normalise lines by stripping
+        // whitespace before checking equality. (This has an annoying interaction
+        // with newlineIsToken that requires special handling: if newlines get their
+        // own token, then we DON'T want to trim the *newline* tokens down to empty
+        // strings, since this would cause us to treat whitespace-only line content
+        // as equal to a separator between lines, which would be weird and
+        // inconsistent with the documented behavior of the options.)
+        if (options.ignoreWhitespace) {
+            if (!options.newlineIsToken || !left.includes('\n')) {
+                left = left.trim();
+            }
+            if (!options.newlineIsToken || !right.includes('\n')) {
+                right = right.trim();
+            }
+        }
+        else if (options.ignoreNewlineAtEof && !options.newlineIsToken) {
+            if (left.endsWith('\n')) {
+                left = left.slice(0, -1);
+            }
+            if (right.endsWith('\n')) {
+                right = right.slice(0, -1);
+            }
+        }
+        return super.equals(left, right, options);
+    }
+}
+const lineDiff = new LineDiff();
+function diffLines(oldStr, newStr, options) {
+    return lineDiff.diff(oldStr, newStr, options);
+}
+// Exported standalone so it can be used from jsonDiff too.
+function tokenize(value, options) {
+    if (options.stripTrailingCr) {
+        // remove one \r before \n to match GNU diff's --strip-trailing-cr behavior
+        value = value.replace(/\r\n/g, '\n');
+    }
+    const retLines = [], linesAndNewlines = value.split(/(\n|\r\n)/);
+    // Ignore the final empty token that occurs if the string ends with a new line
+    if (!linesAndNewlines[linesAndNewlines.length - 1]) {
+        linesAndNewlines.pop();
+    }
+    // Merge the content and line separators into single tokens
+    for (let i = 0; i < linesAndNewlines.length; i++) {
+        const line = linesAndNewlines[i];
+        if (i % 2 && !options.newlineIsToken) {
+            retLines[retLines.length - 1] += line;
+        }
+        else {
+            retLines.push(line);
+        }
+    }
+    return retLines;
+}
+
+function structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options) {
+    let optionsObj;
+    if (!options) {
+        optionsObj = {};
+    }
+    else if (typeof options === 'function') {
+        optionsObj = { callback: options };
+    }
+    else {
+        optionsObj = options;
+    }
+    if (typeof optionsObj.context === 'undefined') {
+        optionsObj.context = 4;
+    }
+    // We copy this into its own variable to placate TypeScript, which thinks
+    // optionsObj.context might be undefined in the callbacks below.
+    const context = optionsObj.context;
+    // @ts-expect-error (runtime check for something that is correctly a static type error)
+    if (optionsObj.newlineIsToken) {
+        throw new Error('newlineIsToken may not be used with patch-generation functions, only with diffing functions');
+    }
+    if (!optionsObj.callback) {
+        return diffLinesResultToPatch(diffLines(oldStr, newStr, optionsObj));
+    }
+    else {
+        const { callback } = optionsObj;
+        diffLines(oldStr, newStr, Object.assign(Object.assign({}, optionsObj), { callback: (diff) => {
+                const patch = diffLinesResultToPatch(diff);
+                // TypeScript is unhappy without the cast because it does not understand that `patch` may
+                // be undefined here only if `callback` is StructuredPatchCallbackAbortable:
+                callback(patch);
+            } }));
+    }
+    function diffLinesResultToPatch(diff) {
+        // STEP 1: Build up the patch with no "\ No newline at end of file" lines and with the arrays
+        //         of lines containing trailing newline characters. We'll tidy up later...
+        if (!diff) {
+            return;
+        }
+        diff.push({ value: '', lines: [] }); // Append an empty value to make cleanup easier
+        function contextLines(lines) {
+            return lines.map(function (entry) { return ' ' + entry; });
+        }
+        const hunks = [];
+        let oldRangeStart = 0, newRangeStart = 0, curRange = [], oldLine = 1, newLine = 1;
+        for (let i = 0; i < diff.length; i++) {
+            const current = diff[i], lines = current.lines || splitLines(current.value);
+            current.lines = lines;
+            if (current.added || current.removed) {
+                // If we have previous context, start with that
+                if (!oldRangeStart) {
+                    const prev = diff[i - 1];
+                    oldRangeStart = oldLine;
+                    newRangeStart = newLine;
+                    if (prev) {
+                        curRange = context > 0 ? contextLines(prev.lines.slice(-context)) : [];
+                        oldRangeStart -= curRange.length;
+                        newRangeStart -= curRange.length;
+                    }
+                }
+                // Output our changes
+                for (const line of lines) {
+                    curRange.push((current.added ? '+' : '-') + line);
+                }
+                // Track the updated file position
+                if (current.added) {
+                    newLine += lines.length;
+                }
+                else {
+                    oldLine += lines.length;
+                }
+            }
+            else {
+                // Identical context lines. Track line changes
+                if (oldRangeStart) {
+                    // Close out any changes that have been output (or join overlapping)
+                    if (lines.length <= context * 2 && i < diff.length - 2) {
+                        // Overlapping
+                        for (const line of contextLines(lines)) {
+                            curRange.push(line);
+                        }
+                    }
+                    else {
+                        // end the range and output
+                        const contextSize = Math.min(lines.length, context);
+                        for (const line of contextLines(lines.slice(0, contextSize))) {
+                            curRange.push(line);
+                        }
+                        const hunk = {
+                            oldStart: oldRangeStart,
+                            oldLines: (oldLine - oldRangeStart + contextSize),
+                            newStart: newRangeStart,
+                            newLines: (newLine - newRangeStart + contextSize),
+                            lines: curRange
+                        };
+                        hunks.push(hunk);
+                        oldRangeStart = 0;
+                        newRangeStart = 0;
+                        curRange = [];
+                    }
+                }
+                oldLine += lines.length;
+                newLine += lines.length;
+            }
+        }
+        // Step 2: eliminate the trailing `\n` from each line of each hunk, and, where needed, add
+        //         "\ No newline at end of file".
+        for (const hunk of hunks) {
+            for (let i = 0; i < hunk.lines.length; i++) {
+                if (hunk.lines[i].endsWith('\n')) {
+                    hunk.lines[i] = hunk.lines[i].slice(0, -1);
+                }
+                else {
+                    hunk.lines.splice(i + 1, 0, '\\ No newline at end of file');
+                    i++; // Skip the line we just added, then continue iterating
+                }
+            }
+        }
+        return {
+            oldFileName: oldFileName, newFileName: newFileName,
+            oldHeader: oldHeader, newHeader: newHeader,
+            hunks: hunks
+        };
+    }
+}
+/**
+ * Split `text` into an array of lines, including the trailing newline character (where present)
+ */
+function splitLines(text) {
+    const hasTrailingNl = text.endsWith('\n');
+    const result = text.split('\n').map(line => line + '\n');
+    if (hasTrailingNl) {
+        result.pop();
+    }
+    else {
+        result.push(result.pop().slice(0, -1));
+    }
+    return result;
+}
+
+var parseDiff$1;
+var hasRequiredParseDiff;
+
+function requireParseDiff () {
+	if (hasRequiredParseDiff) return parseDiff$1;
+	hasRequiredParseDiff = 1;
+function _typeof(obj){"@babel/helpers - typeof";return _typeof="function"==typeof Symbol&&"symbol"==typeof Symbol.iterator?function(obj){return typeof obj}:function(obj){return obj&&"function"==typeof Symbol&&obj.constructor===Symbol&&obj!==Symbol.prototype?"symbol":typeof obj},_typeof(obj)}function _createForOfIteratorHelper(o,allowArrayLike){var it=typeof Symbol!=="undefined"&&o[Symbol.iterator]||o["@@iterator"];if(!it){if(Array.isArray(o)||(it=_unsupportedIterableToArray(o))||allowArrayLike){if(it)o=it;var i=0;var F=function F(){};return {s:F,n:function n(){if(i>=o.length)return {done:true};return {done:false,value:o[i++]}},e:function e(_e2){throw _e2},f:F}}throw new TypeError("Invalid attempt to iterate non-iterable instance.\nIn order to be iterable, non-array objects must have a [Symbol.iterator]() method.")}var normalCompletion=true,didErr=false,err;return {s:function s(){it=it.call(o);},n:function n(){var step=it.next();normalCompletion=step.done;return step},e:function e(_e3){didErr=true;err=_e3;},f:function f(){try{if(!normalCompletion&&it["return"]!=null)it["return"]();}finally{if(didErr)throw err}}}}function _defineProperty(obj,key,value){key=_toPropertyKey(key);if(key in obj){Object.defineProperty(obj,key,{value:value,enumerable:true,configurable:true,writable:true});}else {obj[key]=value;}return obj}function _toPropertyKey(arg){var key=_toPrimitive(arg,"string");return _typeof(key)==="symbol"?key:String(key)}function _toPrimitive(input,hint){if(_typeof(input)!=="object"||input===null)return input;var prim=input[Symbol.toPrimitive];if(prim!==undefined){var res=prim.call(input,hint);if(_typeof(res)!=="object")return res;throw new TypeError("@@toPrimitive must return a primitive value.")}return (hint==="string"?String:Number)(input)}function _slicedToArray(arr,i){return _arrayWithHoles(arr)||_iterableToArrayLimit(arr,i)||_unsupportedIterableToArray(arr,i)||_nonIterableRest()}function _nonIterableRest(){throw new TypeError("Invalid attempt to destructure non-iterable instance.\nIn order to be iterable, non-array objects must have a [Symbol.iterator]() method.")}function _unsupportedIterableToArray(o,minLen){if(!o)return;if(typeof o==="string")return _arrayLikeToArray(o,minLen);var n=Object.prototype.toString.call(o).slice(8,-1);if(n==="Object"&&o.constructor)n=o.constructor.name;if(n==="Map"||n==="Set")return Array.from(o);if(n==="Arguments"||/^(?:Ui|I)nt(?:8|16|32)(?:Clamped)?Array$/.test(n))return _arrayLikeToArray(o,minLen)}function _arrayLikeToArray(arr,len){if(len==null||len>arr.length)len=arr.length;for(var i=0,arr2=new Array(len);i<len;i++){arr2[i]=arr[i];}return arr2}function _iterableToArrayLimit(arr,i){var _i=null==arr?null:"undefined"!=typeof Symbol&&arr[Symbol.iterator]||arr["@@iterator"];if(null!=_i){var _s,_e,_x,_r,_arr=[],_n=true,_d=false;try{if(_x=(_i=_i.call(arr)).next,0===i){if(Object(_i)!==_i)return;_n=!1;}else for(;!(_n=(_s=_x.call(_i)).done)&&(_arr.push(_s.value),_arr.length!==i);_n=!0){;}}catch(err){_d=true,_e=err;}finally{try{if(!_n&&null!=_i["return"]&&(_r=_i["return"](),Object(_r)!==_r))return}finally{if(_d)throw _e}}return _arr}}function _arrayWithHoles(arr){if(Array.isArray(arr))return arr}parseDiff$1=function(input){if(!input)return [];if(typeof input!=="string"||input.match(/^\s+$/))return [];var lines=input.split("\n");if(lines.length===0)return [];var files=[];var currentFile=null;var currentChunk=null;var deletedLineCounter=0;var addedLineCounter=0;var currentFileChanges=null;var normal=function normal(line){var _currentChunk;(_currentChunk=currentChunk)===null||_currentChunk===void 0?void 0:_currentChunk.changes.push({type:"normal",normal:true,ln1:deletedLineCounter++,ln2:addedLineCounter++,content:line});currentFileChanges.oldLines--;currentFileChanges.newLines--;};var start=function start(line){var _parseFiles;var _ref=(_parseFiles=parseFiles(line))!==null&&_parseFiles!==void 0?_parseFiles:[],_ref2=_slicedToArray(_ref,2),fromFileName=_ref2[0],toFileName=_ref2[1];currentFile={chunks:[],deletions:0,additions:0,from:fromFileName,to:toFileName};files.push(currentFile);};var restart=function restart(){if(!currentFile||currentFile.chunks.length)start();};var newFile=function newFile(_,match){restart();currentFile["new"]=true;currentFile.newMode=match[1];currentFile.from="/dev/null";};var deletedFile=function deletedFile(_,match){restart();currentFile.deleted=true;currentFile.oldMode=match[1];currentFile.to="/dev/null";};var oldMode=function oldMode(_,match){restart();currentFile.oldMode=match[1];};var newMode=function newMode(_,match){restart();currentFile.newMode=match[1];};var index=function index(line,match){restart();currentFile.index=line.split(" ").slice(1);if(match[1]){currentFile.oldMode=currentFile.newMode=match[1].trim();}};var fromFile=function fromFile(line){restart();currentFile.from=parseOldOrNewFile(line);};var toFile=function toFile(line){restart();currentFile.to=parseOldOrNewFile(line);};var toNumOfLines=function toNumOfLines(number){return +(number||1)};var chunk=function chunk(line,match){if(!currentFile){start(line);}var _match$slice=match.slice(1),_match$slice2=_slicedToArray(_match$slice,4),oldStart=_match$slice2[0],oldNumLines=_match$slice2[1],newStart=_match$slice2[2],newNumLines=_match$slice2[3];deletedLineCounter=+oldStart;addedLineCounter=+newStart;currentChunk={content:line,changes:[],oldStart:+oldStart,oldLines:toNumOfLines(oldNumLines),newStart:+newStart,newLines:toNumOfLines(newNumLines)};currentFileChanges={oldLines:toNumOfLines(oldNumLines),newLines:toNumOfLines(newNumLines)};currentFile.chunks.push(currentChunk);};var del=function del(line){if(!currentChunk)return;currentChunk.changes.push({type:"del",del:true,ln:deletedLineCounter++,content:line});currentFile.deletions++;currentFileChanges.oldLines--;};var add=function add(line){if(!currentChunk)return;currentChunk.changes.push({type:"add",add:true,ln:addedLineCounter++,content:line});currentFile.additions++;currentFileChanges.newLines--;};var eof=function eof(line){var _currentChunk$changes3;if(!currentChunk)return;var _currentChunk$changes=currentChunk.changes.slice(-1),_currentChunk$changes2=_slicedToArray(_currentChunk$changes,1),mostRecentChange=_currentChunk$changes2[0];currentChunk.changes.push((_currentChunk$changes3={type:mostRecentChange.type},_defineProperty(_currentChunk$changes3,mostRecentChange.type,true),_defineProperty(_currentChunk$changes3,"ln1",mostRecentChange.ln1),_defineProperty(_currentChunk$changes3,"ln2",mostRecentChange.ln2),_defineProperty(_currentChunk$changes3,"ln",mostRecentChange.ln),_defineProperty(_currentChunk$changes3,"content",line),_currentChunk$changes3));};var schemaHeaders=[[/^diff\s/,start],[/^new file mode (\d+)$/,newFile],[/^deleted file mode (\d+)$/,deletedFile],[/^old mode (\d+)$/,oldMode],[/^new mode (\d+)$/,newMode],[/^index\s[\da-zA-Z]+\.\.[\da-zA-Z]+(\s(\d+))?$/,index],[/^---\s/,fromFile],[/^\+\+\+\s/,toFile],[/^@@\s+-(\d+),?(\d+)?\s+\+(\d+),?(\d+)?\s@@/,chunk],[/^\\ No newline at end of file$/,eof]];var schemaContent=[[/^\\ No newline at end of file$/,eof],[/^-/,del],[/^\+/,add],[/^\s+/,normal]];var parseContentLine=function parseContentLine(line){for(var _i2=0,_schemaContent=schemaContent;_i2<_schemaContent.length;_i2++){var _schemaContent$_i=_slicedToArray(_schemaContent[_i2],2),pattern=_schemaContent$_i[0],handler=_schemaContent$_i[1];var match=line.match(pattern);if(match){handler(line,match);break}}if(currentFileChanges.oldLines===0&&currentFileChanges.newLines===0){currentFileChanges=null;}};var parseHeaderLine=function parseHeaderLine(line){for(var _i3=0,_schemaHeaders=schemaHeaders;_i3<_schemaHeaders.length;_i3++){var _schemaHeaders$_i=_slicedToArray(_schemaHeaders[_i3],2),pattern=_schemaHeaders$_i[0],handler=_schemaHeaders$_i[1];var match=line.match(pattern);if(match){handler(line,match);break}}};var parseLine=function parseLine(line){if(currentFileChanges){parseContentLine(line);}else {parseHeaderLine(line);}return};var _iterator=_createForOfIteratorHelper(lines),_step;try{for(_iterator.s();!(_step=_iterator.n()).done;){var line=_step.value;parseLine(line);}}catch(err){_iterator.e(err);}finally{_iterator.f();}return files};var fileNameDiffRegex=/(a|i|w|c|o|1|2)\/.*(?=["']? ["']?(b|i|w|c|o|1|2)\/)|(b|i|w|c|o|1|2)\/.*$/g;var gitFileHeaderRegex=/^(a|b|i|w|c|o|1|2)\//;var parseFiles=function parseFiles(line){var fileNames=line===null||line===void 0?void 0:line.match(fileNameDiffRegex);return fileNames===null||fileNames===void 0?void 0:fileNames.map(function(fileName){return fileName.replace(gitFileHeaderRegex,"").replace(/("|')$/,"")})};var qoutedFileNameRegex=/^\\?['"]|\\?['"]$/g;var parseOldOrNewFile=function parseOldOrNewFile(line){var fileName=leftTrimChars(line,"-+").trim();fileName=removeTimeStamp(fileName);return fileName.replace(qoutedFileNameRegex,"").replace(gitFileHeaderRegex,"")};var leftTrimChars=function leftTrimChars(string,trimmingChars){string=makeString(string);var trimmingString=formTrimmingString(trimmingChars);return string.replace(new RegExp("^".concat(trimmingString,"+")),"")};var timeStampRegex=/\t.*|\d{4}-\d\d-\d\d\s\d\d:\d\d:\d\d(.\d+)?\s(\+|-)\d\d\d\d/;var removeTimeStamp=function removeTimeStamp(string){var timeStamp=timeStampRegex.exec(string);if(timeStamp){string=string.substring(0,timeStamp.index).trim();}return string};var formTrimmingString=function formTrimmingString(trimmingChars){if(trimmingChars instanceof RegExp)return trimmingChars.source;return "[".concat(makeString(trimmingChars).replace(/([.*+?^=!:${}()|[\]/\\])/g,"\\$1"),"]")};var makeString=function makeString(itemToConvert){return (itemToConvert!==null&&itemToConvert!==void 0?itemToConvert:"")+""};
+	return parseDiff$1;
+}
+
+var parseDiffExports = requireParseDiff();
+var parseDiff = /*@__PURE__*/getDefaultExportFromCjs(parseDiffExports);
+
 /**
  * Module for managing pull request review comments
  */
 /** Marker used to identify comments created by this action */
 const COMMENT_MARKER = '<!-- csharpier-action -->';
 /**
+ * Generate structured hunks for formatting violations
+ * Splits large hunks into separate comments for each group of changes
+ *
+ * @param originalContent - The original unformatted content
+ * @param formattedContent - The formatted content
+ * @param filePath - Path to the file (used in patch header)
+ * @returns Array of hunks with line numbers and content
+ */
+function generateFormattingHunks(originalContent, formattedContent, filePath) {
+    // Generate unified diff patch
+    const patch = structuredPatch(filePath, filePath, originalContent, formattedContent, '', '', { context: 3 });
+    const hunks = [];
+    for (const hunk of patch.hunks) {
+        coreExports.debug(`Processing hunk: newStart=${hunk.newStart}, lines=${hunk.lines.length}`);
+        // Track all changes in this hunk as separate sub-hunks
+        // This allows us to handle files where one hunk has changes both
+        // inside and outside the PR diff range
+        const changes = [];
+        let currentLine = hunk.newStart;
+        let inChangeBlock = false;
+        let changeStartIndex = 0;
+        let changeStartLine = 0;
+        for (let i = 0; i < hunk.lines.length; i++) {
+            const line = hunk.lines[i];
+            const isContext = line.startsWith(' ');
+            const isAddition = line.startsWith('+');
+            const isDeletion = line.startsWith('-');
+            const isChange = isAddition || isDeletion;
+            if (isChange && !inChangeBlock) {
+                // Start of a new change block
+                inChangeBlock = true;
+                changeStartIndex = i;
+                changeStartLine = currentLine;
+            }
+            else if (!isChange && inChangeBlock) {
+                // End of change block - save it
+                changes.push({
+                    startLine: changeStartLine,
+                    startIndex: changeStartIndex,
+                    endIndex: i - 1
+                });
+                inChangeBlock = false;
+            }
+            // Only count lines that appear in the new file
+            if (isContext || isAddition) {
+                currentLine++;
+            }
+        }
+        // Handle case where change block extends to end of hunk
+        if (inChangeBlock) {
+            changes.push({
+                startLine: changeStartLine,
+                startIndex: changeStartIndex,
+                endIndex: hunk.lines.length - 1
+            });
+        }
+        // For each change block, create a separate hunk with context
+        for (const change of changes) {
+            // Include context lines before and after
+            const contextBefore = 3;
+            const contextAfter = 3;
+            const startIndex = Math.max(0, change.startIndex - contextBefore);
+            const endIndex = Math.min(hunk.lines.length - 1, change.endIndex + contextAfter);
+            // Find the first actual change line within the context window
+            // (this is where we'll place the comment)
+            let firstChangeLineInSubHunk = change.startLine;
+            let foundChange = false;
+            for (let i = startIndex; i <= endIndex; i++) {
+                const line = hunk.lines[i];
+                const isChange = line.startsWith('+') || line.startsWith('-');
+                if (isChange && !foundChange) {
+                    // Calculate line number at this position
+                    let lineNum = hunk.newStart;
+                    for (let j = 0; j < i; j++) {
+                        const l = hunk.lines[j];
+                        if (l.startsWith(' ') || l.startsWith('+')) {
+                            lineNum++;
+                        }
+                    }
+                    firstChangeLineInSubHunk = lineNum;
+                    foundChange = true;
+                    break;
+                }
+            }
+            // Collect formatted content for this sub-hunk
+            const formattedLines = [];
+            for (let i = startIndex; i <= endIndex; i++) {
+                const line = hunk.lines[i];
+                if (line.startsWith(' ') || line.startsWith('+')) {
+                    formattedLines.push(line.substring(1));
+                }
+            }
+            hunks.push({
+                lineNumber: firstChangeLineInSubHunk,
+                content: formattedLines.join('\n'),
+                originalLineRange: {
+                    start: hunk.oldStart,
+                    end: hunk.oldStart + hunk.oldLines - 1
+                }
+            });
+        }
+    }
+    return hunks;
+}
+/**
  * Get existing review comments created by this action
  *
- * @param octokit - Authenticated GitHub API client
+ * @param api - GitHub API client
  * @param context - GitHub Actions context
  * @returns Array of existing violation comments
  */
-async function getExistingComments(octokit, context) {
+async function getExistingComments(api, context) {
     if (!context.payload.pull_request) {
         return [];
     }
     const pullNumber = context.payload.pull_request.number;
     coreExports.debug(`Fetching existing review comments for PR #${pullNumber}`);
-    const { data: comments } = await octokit.rest.pulls.listReviewComments({
+    const comments = await api.listReviewComments({
         owner: context.repo.owner,
         repo: context.repo.repo,
         pull_number: pullNumber
@@ -31407,48 +31950,135 @@ async function getExistingComments(octokit, context) {
         id: comment.id,
         path: comment.path,
         body: comment.body || '',
-        isResolved: comment.in_reply_to_id !== undefined
+        isResolved: comment.in_reply_to_id !== undefined,
+        line: comment.line || comment.original_line || 0
     }));
     coreExports.debug(`Found ${actionComments.length} existing action comment(s)`);
     return actionComments;
 }
 /**
- * Create a review comment for a formatting violation
+ * Find the line number in the PR diff that corresponds to a formatting hunk
  *
- * @param octokit - Authenticated GitHub API client
+ * @param prPatch - The unified diff patch from GitHub PR
+ * @param targetLine - The line number in the file where the hunk starts
+ * @returns The line number in the PR diff, or 0 if not found
+ */
+function findLineInPRDiff(prPatch, targetLine) {
+    const parsed = parseDiff(prPatch);
+    if (parsed.length === 0) {
+        return 0;
+    }
+    const file = parsed[0];
+    for (const chunk of file.chunks) {
+        let currentLine = chunk.newStart;
+        for (const change of chunk.changes) {
+            if (change.type === 'add' || change.type === 'normal') {
+                if (currentLine === targetLine) {
+                    return currentLine;
+                }
+                currentLine++;
+            }
+        }
+    }
+    return 0;
+}
+/**
+ * Create or update review comments for formatting violations in a file
+ *
+ * @param api - GitHub API client
  * @param context - GitHub Actions context
  * @param filePath - Path to the file with the violation
  * @param commitSha - SHA of the commit to comment on
+ * @param formattedContent - The formatted content of the file
+ * @param existingComments - Existing comments for this file, if any
  */
-async function createViolationComment(octokit, context, filePath, commitSha) {
+async function createViolationComments(api, context, filePath, commitSha, formattedContent, existingComments) {
     if (!context.payload.pull_request) {
         return;
     }
     const pullNumber = context.payload.pull_request.number;
-    const body = `${COMMENT_MARKER}
-This file is not formatted according to CSharpier rules.
+    coreExports.info(`Creating comments for ${filePath}`);
+    try {
+        // Get the diff to find positions in the PR
+        const files = await api.listFiles({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: pullNumber
+        });
+        const file = files.find((f) => f.filename === filePath);
+        if (!file || !file.patch) {
+            coreExports.warning(`Cannot create review comment for ${filePath}: file not found in PR diff`);
+            return;
+        }
+        // Read the original file content
+        const originalContent = await readFile(filePath, 'utf8');
+        // Generate formatting hunks
+        const hunks = generateFormattingHunks(originalContent, formattedContent, filePath);
+        if (hunks.length === 0) {
+            coreExports.debug(`No formatting hunks found for ${filePath}`);
+            return;
+        }
+        coreExports.debug(`Found ${hunks.length} formatting hunk(s) in ${filePath}`);
+        // Create or update comments for each hunk
+        for (const hunk of hunks) {
+            // Find where this hunk appears in the PR diff
+            const lineNumber = findLineInPRDiff(file.patch, hunk.lineNumber);
+            if (lineNumber === 0) {
+                coreExports.debug(`Skipping hunk at line ${hunk.lineNumber} in ${filePath}: not in PR diff`);
+                continue;
+            }
+            // Create comment body with suggestion block
+            const body = `${COMMENT_MARKER}
+This section is not formatted according to CSharpier rules.
+
+\`\`\`suggestion
+${hunk.content}
+\`\`\`
 
 Run \`dotnet csharpier format ${filePath}\` to fix the formatting.`;
-    coreExports.info(`Creating comment for ${filePath}`);
-    await octokit.rest.pulls.createReviewComment({
-        owner: context.repo.owner,
-        repo: context.repo.repo,
-        pull_number: pullNumber,
-        body,
-        commit_id: commitSha,
-        path: filePath,
-        line: 1
-    });
+            // Check if we already have a comment at this line
+            const existingComment = existingComments.find((c) => c.line === lineNumber && !c.isResolved);
+            if (existingComment) {
+                if (existingComment.body === body) {
+                    coreExports.debug(`Comment at line ${lineNumber} in ${filePath} unchanged, skipping`);
+                    continue;
+                }
+                coreExports.debug(`Updating comment at line ${lineNumber} in ${filePath}`);
+                await api.updateReviewComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: existingComment.id,
+                    body
+                });
+            }
+            else {
+                coreExports.debug(`Creating comment at line ${lineNumber} in ${filePath}`);
+                await api.createReviewComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    pull_number: pullNumber,
+                    body,
+                    commit_id: commitSha,
+                    path: filePath,
+                    line: lineNumber,
+                    side: 'RIGHT'
+                });
+            }
+        }
+    }
+    catch (error) {
+        coreExports.warning(`Failed to create review comments for ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+    }
 }
 /**
  * Resolve comments for files that no longer have violations
  *
- * @param octokit - Authenticated GitHub API client
+ * @param api - GitHub API client
  * @param context - GitHub Actions context
  * @param existingComments - Current comments on the PR
  * @param fixedFiles - Files that are now properly formatted
  */
-async function resolveFixedComments(octokit, context, existingComments, fixedFiles) {
+async function resolveFixedComments(api, context, existingComments, fixedFiles) {
     if (!context.payload.pull_request) {
         return;
     }
@@ -31463,12 +32093,72 @@ async function resolveFixedComments(octokit, context, existingComments, fixedFil
     for (const comment of commentsToResolve) {
         coreExports.debug(`Resolving comment ${comment.id} for ${comment.path}`);
         // Create a reply to resolve the comment
-        await octokit.rest.pulls.createReplyForReviewComment({
+        await api.createReplyForReviewComment({
             owner: context.repo.owner,
             repo: context.repo.repo,
             pull_number: pullNumber,
             comment_id: comment.id,
             body: '✓ Formatting has been fixed.'
+        });
+    }
+}
+
+/**
+ * Abstraction layer for GitHub API operations
+ */
+/**
+ * Real GitHub API implementation using Octokit
+ */
+class OctokitGitHubAPI {
+    octokit;
+    constructor(octokit) {
+        this.octokit = octokit;
+    }
+    async listFiles(params) {
+        const { data } = await this.octokit.rest.pulls.listFiles(params);
+        return data.map((f) => ({
+            filename: f.filename,
+            patch: f.patch
+        }));
+    }
+    async listReviewComments(params) {
+        const { data } = await this.octokit.rest.pulls.listReviewComments(params);
+        return data.map((c) => ({
+            id: c.id,
+            path: c.path,
+            body: c.body,
+            line: c.line ?? undefined,
+            original_line: c.original_line ?? undefined,
+            in_reply_to_id: c.in_reply_to_id
+        }));
+    }
+    async createReviewComment(params) {
+        await this.octokit.rest.pulls.createReviewComment({
+            owner: params.owner,
+            repo: params.repo,
+            pull_number: params.pull_number,
+            body: params.body,
+            commit_id: params.commit_id,
+            path: params.path,
+            line: params.line,
+            side: params.side
+        });
+    }
+    async updateReviewComment(params) {
+        await this.octokit.rest.pulls.updateReviewComment({
+            owner: params.owner,
+            repo: params.repo,
+            comment_id: params.comment_id,
+            body: params.body
+        });
+    }
+    async createReplyForReviewComment(params) {
+        await this.octokit.rest.pulls.createReplyForReviewComment({
+            owner: params.owner,
+            repo: params.repo,
+            pull_number: params.pull_number,
+            comment_id: params.comment_id,
+            body: params.body
         });
     }
 }
@@ -31498,6 +32188,7 @@ async function run() {
         }
         // Create GitHub API client
         const octokit = githubExports.getOctokit(githubToken);
+        const api = new OctokitGitHubAPI(octokit);
         const context = githubExports.context;
         // Install CSharpier
         await installCSharpier(csharpierVersion);
@@ -31509,39 +32200,41 @@ async function run() {
             return;
         }
         // Get existing comments
-        const existingComments = await getExistingComments(octokit, context);
-        // Run CSharpier check
+        const existingComments = await getExistingComments(api, context);
+        // Format all changed files in one batch
         const filePaths = changedFiles.map((f) => f.path);
-        const result = await checkFiles(filePaths);
-        // Handle CSharpier errors (exit code 2+)
-        if (result.exitCode >= 2) {
-            coreExports.error('CSharpier encountered an error:');
-            coreExports.error(result.stderr || result.stdout);
-            coreExports.setFailed('CSharpier check failed with errors');
-            return;
+        const formattedMap = await formatFiles(filePaths);
+        // Identify unformatted files by comparing original vs formatted
+        const fs = await import('fs/promises');
+        const unformattedFiles = [];
+        for (const filePath of filePaths) {
+            const originalContent = await fs.readFile(filePath, 'utf8');
+            const formattedContent = formattedMap.get(filePath);
+            if (formattedContent && originalContent !== formattedContent) {
+                unformattedFiles.push(filePath);
+            }
         }
         // Determine which files are fixed (were unformatted before, but formatted now)
         const previouslyUnformattedFiles = existingComments.map((c) => c.path);
-        const fixedFiles = previouslyUnformattedFiles.filter((file) => !result.unformattedFiles.includes(file));
+        const fixedFiles = previouslyUnformattedFiles.filter((file) => !unformattedFiles.includes(file));
         // Resolve comments for fixed files
         if (fixedFiles.length > 0) {
-            await resolveFixedComments(octokit, context, existingComments, fixedFiles);
+            await resolveFixedComments(api, context, existingComments, fixedFiles);
         }
-        // Create comments for new violations
+        // Create or update comments for violations
         const commitSha = context.payload.pull_request.head.sha;
-        const existingCommentPaths = existingComments.map((c) => c.path);
-        for (const file of result.unformattedFiles) {
-            // Only create a comment if one doesn't already exist for this file
-            if (!existingCommentPaths.includes(file)) {
-                await createViolationComment(octokit, context, file, commitSha);
-            }
+        for (const file of unformattedFiles) {
+            // Find existing comments for this file
+            const fileComments = existingComments.filter((c) => c.path === file);
+            const formattedContent = formattedMap.get(file);
+            await createViolationComments(api, context, file, commitSha, formattedContent, fileComments);
         }
         // Set outputs
-        const hasViolations = result.unformattedFiles.length > 0;
+        const hasViolations = unformattedFiles.length > 0;
         coreExports.setOutput('violations-found', hasViolations.toString());
         // Report results
         if (hasViolations) {
-            coreExports.setFailed(`Found ${result.unformattedFiles.length} file(s) with formatting violations`);
+            coreExports.setFailed(`Found ${unformattedFiles.length} file(s) with formatting violations`);
         }
         else {
             coreExports.info('All C# files are properly formatted!');
