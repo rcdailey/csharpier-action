@@ -4,15 +4,17 @@
 [![Check
 dist/](https://github.com/rcdailey/csharpier-action/actions/workflows/check-dist.yml/badge.svg)](https://github.com/rcdailey/csharpier-action/actions/workflows/check-dist.yml)
 
-A GitHub Action that runs [CSharpier](https://csharpier.com) formatting checks on pull requests and
-provides inline review comments for formatting violations.
+A GitHub Action that runs [CSharpier](https://csharpier.com) formatting checks
+on pull requests and provides inline review comments for formatting violations.
 
 ## Features
 
-- **Automated Formatting Checks**: Runs `dotnet csharpier check` on C# files changed in pull
-  requests
-- **Inline Review Comments**: Leaves review comments on files with formatting violations
-- **Auto-Resolution**: Automatically resolves comments when formatting violations are fixed
+- **Automated Formatting Checks**: Runs `dotnet csharpier check` on C# files
+  changed in pull requests
+- **Inline Review Comments**: Leaves review comments on files with formatting
+  violations
+- **Auto-Resolution**: Automatically resolves comments when formatting
+  violations are fixed
 - **Silent Success**: No comments posted when all files are properly formatted
 - **Error Handling**: Fails the check run if CSharpier encounters errors
 
@@ -75,13 +77,15 @@ jobs:
 ## How It Works
 
 1. **Installation**: Installs CSharpier as a global dotnet tool
-1. **File Detection**: Fetches all C# files (`.cs`, `.csx`) changed in the pull request
+1. **File Detection**: Fetches all C# files (`.cs`, `.csx`) changed in the pull
+   request
 1. **Format Check**: Runs `dotnet csharpier check` on changed files
 1. **Comment Management**:
    - Creates review comments on files with formatting violations
    - Resolves existing comments when violations are fixed
    - Avoids duplicate comments on already-flagged files
-1. **Status**: Fails the check run if violations are found or if CSharpier errors occur
+1. **Status**: Fails the check run if violations are found or if CSharpier
+   errors occur
 
 ## Requirements
 
@@ -91,7 +95,8 @@ jobs:
 
 ## Concurrency
 
-To cancel previous runs when new commits are pushed, use the `concurrency` configuration:
+To cancel previous runs when new commits are pushed, use the `concurrency`
+configuration:
 
 ```yaml
 concurrency:
@@ -101,7 +106,8 @@ concurrency:
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
+for details.
 
 ## Contributing
 
