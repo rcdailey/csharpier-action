@@ -12,6 +12,7 @@ After changes:
 
 Testing Requirements:
 
+- MUST use red, green, refactor approach
 - Test BEHAVIOR, not implementation
 - Integration test approach utilizes ports and adapters (hexagonal architecture)
 - No overlap between new or existing tests

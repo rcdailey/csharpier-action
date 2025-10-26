@@ -84,7 +84,7 @@ describe('Comment Manager', () => {
       expect(comments[0].body).not.toContain('class  Test')
     })
 
-    it('updates comment when existing comment has different content', async () => {
+    it('replaces comment when existing comment has different content', async () => {
       // Create test file
       const testFilePath = join(testDir, 'test2.cs')
       const unformattedContent = 'class Test\n{\n//Updated\n}'
@@ -125,7 +125,8 @@ describe('Comment Manager', () => {
 
       const comments = mockAPI.getComments()
       expect(comments).toHaveLength(1)
-      expect(comments[0].id).toBe(100)
+      // Old comment should be deleted, new comment should have ID 1
+      expect(comments[0].id).toBe(1)
       expect(comments[0].body).toContain('// Updated')
       expect(comments[0].body).toContain('<!-- csharpier-action -->')
     })
@@ -248,7 +249,7 @@ public class AnotherClass
       expect(body).toContain('```suggestion')
     })
 
-    it('skips update when existing comment has identical content', async () => {
+    it('replaces existing comment even when content is identical', async () => {
       // Create test file
       const testFilePath = join(testDir, 'test3.cs')
       const unformattedContent = 'class  Test\n{\n}'
@@ -297,7 +298,8 @@ Run \`dotnet csharpier format ${testFilePath}\` to fix the formatting.`
 
       const comments = mockAPI.getComments()
       expect(comments).toHaveLength(1)
-      expect(comments[0].id).toBe(100)
+      // Old comment deleted, new one created with ID 1
+      expect(comments[0].id).toBe(1)
       expect(comments[0].body).toBe(commentBody)
     })
   })

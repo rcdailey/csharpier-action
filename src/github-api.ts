@@ -49,6 +49,13 @@ export interface CreateReplyParams {
   body: string
 }
 
+/** Parameters for deleting a review comment */
+export interface DeleteReviewCommentParams {
+  owner: string
+  repo: string
+  comment_id: number
+}
+
 /**
  * GitHub API abstraction for testability
  */
@@ -75,6 +82,9 @@ export interface GitHubAPI {
 
   /** Create a reply to an existing review comment */
   createReplyForReviewComment(params: CreateReplyParams): Promise<void>
+
+  /** Delete a review comment */
+  deleteReviewComment(params: DeleteReviewCommentParams): Promise<void>
 }
 
 /**
@@ -140,6 +150,14 @@ export class OctokitGitHubAPI implements GitHubAPI {
       pull_number: params.pull_number,
       comment_id: params.comment_id,
       body: params.body
+    })
+  }
+
+  async deleteReviewComment(params: DeleteReviewCommentParams): Promise<void> {
+    await this.octokit.rest.pulls.deleteReviewComment({
+      owner: params.owner,
+      repo: params.repo,
+      comment_id: params.comment_id
     })
   }
 }

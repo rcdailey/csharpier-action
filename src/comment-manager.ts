@@ -231,7 +231,29 @@ export async function createViolationComments(
 
     core.debug(`Found ${hunks.length} formatting hunk(s) in ${filePath}`)
 
-    // Create or update comments for each hunk
+    // Delete all existing unresolved comments for this file
+    // This ensures we don't create duplicates when line numbers change
+    const unresolvedComments = existingComments.filter((c) => !c.isResolved)
+    if (unresolvedComments.length > 0) {
+      core.debug(
+        `Deleting ${unresolvedComments.length} existing comment(s) for ${filePath}`
+      )
+      for (const comment of unresolvedComments) {
+        try {
+          await api.deleteReviewComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            comment_id: comment.id
+          })
+        } catch (error) {
+          core.warning(
+            `Failed to delete comment ${comment.id}: ${error instanceof Error ? error.message : String(error)}`
+          )
+        }
+      }
+    }
+
+    // Create comments for each hunk
     for (const hunk of hunks) {
       // Find where this hunk appears in the PR diff
       const lineNumber = findLineInPRDiff(file.patch, hunk.lineNumber)
@@ -253,39 +275,17 @@ ${hunk.content}
 
 Run \`dotnet csharpier format ${filePath}\` to fix the formatting.`
 
-      // Check if we already have a comment at this line
-      const existingComment = existingComments.find(
-        (c) => c.line === lineNumber && !c.isResolved
-      )
-
-      if (existingComment) {
-        if (existingComment.body === body) {
-          core.debug(
-            `Comment at line ${lineNumber} in ${filePath} unchanged, skipping`
-          )
-          continue
-        }
-
-        core.debug(`Updating comment at line ${lineNumber} in ${filePath}`)
-        await api.updateReviewComment({
-          owner: context.repo.owner,
-          repo: context.repo.repo,
-          comment_id: existingComment.id,
-          body
-        })
-      } else {
-        core.debug(`Creating comment at line ${lineNumber} in ${filePath}`)
-        await api.createReviewComment({
-          owner: context.repo.owner,
-          repo: context.repo.repo,
-          pull_number: pullNumber,
-          body,
-          commit_id: commitSha,
-          path: filePath,
-          line: lineNumber,
-          side: 'RIGHT'
-        })
-      }
+      core.debug(`Creating comment at line ${lineNumber} in ${filePath}`)
+      await api.createReviewComment({
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        pull_number: pullNumber,
+        body,
+        commit_id: commitSha,
+        path: filePath,
+        line: lineNumber,
+        side: 'RIGHT'
+      })
     }
   } catch (error) {
     core.warning(
