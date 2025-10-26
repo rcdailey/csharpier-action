@@ -1,20 +1,24 @@
 {
-  "name": "typescript-action",
-  "description": "GitHub Actions TypeScript template",
-  "version": "0.0.0",
-  "author": "",
+  "name": "csharpier-action",
+  "description": "GitHub Action for running CSharpier formatting checks on pull requests",
+  "version": "1.0.0",
+  "author": "Robert Dailey",
   "type": "module",
   "private": true,
-  "homepage": "https://github.com/actions/typescript-action",
+  "homepage": "https://github.com/rcdailey/csharpier-action",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/actions/typescript-action.git"
+    "url": "git+https://github.com/rcdailey/csharpier-action.git"
   },
   "bugs": {
-    "url": "https://github.com/actions/typescript-action/issues"
+    "url": "https://github.com/rcdailey/csharpier-action/issues"
   },
   "keywords": [
-    "actions"
+    "actions",
+    "csharpier",
+    "formatting",
+    "csharp",
+    "dotnet"
   ],
   "exports": {
     ".": "./dist/index.js"
@@ -37,7 +41,9 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@actions/core": "^1.11.1"
+    "@actions/core": "^1.11.1",
+    "@actions/exec": "^1.1.1",
+    "@actions/github": "^6.0.0"
   },
   "devDependencies": {
     "@eslint/compat": "^1.4.0",

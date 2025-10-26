@@ -1,23 +1,29 @@
-name: The name of your action here
-description: Provide a description here
-author: Your name or organization here
+name: CSharpier Formatting Check
+description:
+  Run CSharpier formatting checks on pull requests and provide review comments
+  for violations
+author: Robert Dailey
 
-# Add your action's branding here. This will appear on the GitHub Marketplace.
 branding:
-  icon: heart
-  color: red
+  icon: code
+  color: purple
 
-# Define your inputs here.
 inputs:
-  milliseconds:
-    description: Your input description here
+  command:
+    description: Command to run (currently only 'check' is supported)
     required: true
-    default: '1000'
+  csharpier-version:
+    description: Version of CSharpier to install (default is latest)
+    required: false
+    default: latest
+  github-token:
+    description: GitHub token for API access
+    required: false
+    default: ${{ github.token }}
 
-# Define your outputs here.
 outputs:
-  time:
-    description: Your output description here
+  violations-found:
+    description: Whether formatting violations were found (true/false)
 
 runs:
   using: node24
