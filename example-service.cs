@@ -11,11 +11,7 @@ namespace  ExampleApp.Services
             this.logger = logger;
         }
 
-        public async Task<User> GetUserAsync(int userId)
-        {
-            logger.LogInformation("Fetching user {UserId}", userId);
-            return await database.GetUserAsync(userId);
-        }
+        public async Task<User> GetUserAsync(int userId){logger.LogInformation("Fetching user {UserId}", userId);return await database.GetUserAsync(userId);}
 
         public async Task<bool> CreateUserAsync(User user)
         {
