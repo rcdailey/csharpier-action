@@ -31835,93 +31835,41 @@ function generateFormattingHunks(originalContent, formattedContent, filePath) {
     const hunks = [];
     for (const hunk of patch.hunks) {
         coreExports.debug(`Processing hunk: newStart=${hunk.newStart}, lines=${hunk.lines.length}`);
-        // Track all changes in this hunk as separate sub-hunks
-        // This allows us to handle files where one hunk has changes both
-        // inside and outside the PR diff range
-        const changes = [];
+        // Find the first line with a change
+        let firstChangeLine = hunk.newStart;
+        let foundChange = false;
         let currentLine = hunk.newStart;
-        let inChangeBlock = false;
-        let changeStartIndex = 0;
-        let changeStartLine = 0;
-        for (let i = 0; i < hunk.lines.length; i++) {
-            const line = hunk.lines[i];
+        for (const line of hunk.lines) {
             const isContext = line.startsWith(' ');
             const isAddition = line.startsWith('+');
             const isDeletion = line.startsWith('-');
-            const isChange = isAddition || isDeletion;
-            if (isChange && !inChangeBlock) {
-                // Start of a new change block
-                inChangeBlock = true;
-                changeStartIndex = i;
-                changeStartLine = currentLine;
+            if ((isAddition || isDeletion) && !foundChange) {
+                firstChangeLine = currentLine;
+                foundChange = true;
+                break;
             }
-            else if (!isChange && inChangeBlock) {
-                // End of change block - save it
-                changes.push({
-                    startLine: changeStartLine,
-                    startIndex: changeStartIndex,
-                    endIndex: i - 1
-                });
-                inChangeBlock = false;
-            }
-            // Only count lines that appear in the new file
             if (isContext || isAddition) {
                 currentLine++;
             }
         }
-        // Handle case where change block extends to end of hunk
-        if (inChangeBlock) {
-            changes.push({
-                startLine: changeStartLine,
-                startIndex: changeStartIndex,
-                endIndex: hunk.lines.length - 1
-            });
+        if (!foundChange) {
+            continue;
         }
-        // For each change block, create a separate hunk with context
-        for (const change of changes) {
-            // Include context lines before and after
-            const contextBefore = 3;
-            const contextAfter = 3;
-            const startIndex = Math.max(0, change.startIndex - contextBefore);
-            const endIndex = Math.min(hunk.lines.length - 1, change.endIndex + contextAfter);
-            // Find the first actual change line within the context window
-            // (this is where we'll place the comment)
-            let firstChangeLineInSubHunk = change.startLine;
-            let foundChange = false;
-            for (let i = startIndex; i <= endIndex; i++) {
-                const line = hunk.lines[i];
-                const isChange = line.startsWith('+') || line.startsWith('-');
-                if (isChange && !foundChange) {
-                    // Calculate line number at this position
-                    let lineNum = hunk.newStart;
-                    for (let j = 0; j < i; j++) {
-                        const l = hunk.lines[j];
-                        if (l.startsWith(' ') || l.startsWith('+')) {
-                            lineNum++;
-                        }
-                    }
-                    firstChangeLineInSubHunk = lineNum;
-                    foundChange = true;
-                    break;
-                }
+        // Collect formatted content (context + additions only)
+        const formattedLines = [];
+        for (const line of hunk.lines) {
+            if (line.startsWith(' ') || line.startsWith('+')) {
+                formattedLines.push(line.substring(1));
             }
-            // Collect formatted content for this sub-hunk
-            const formattedLines = [];
-            for (let i = startIndex; i <= endIndex; i++) {
-                const line = hunk.lines[i];
-                if (line.startsWith(' ') || line.startsWith('+')) {
-                    formattedLines.push(line.substring(1));
-                }
-            }
-            hunks.push({
-                lineNumber: firstChangeLineInSubHunk,
-                content: formattedLines.join('\n'),
-                originalLineRange: {
-                    start: hunk.oldStart,
-                    end: hunk.oldStart + hunk.oldLines - 1
-                }
-            });
         }
+        hunks.push({
+            lineNumber: firstChangeLine,
+            content: formattedLines.join('\n'),
+            originalLineRange: {
+                start: hunk.oldStart,
+                end: hunk.oldStart + hunk.oldLines - 1
+            }
+        });
     }
     return hunks;
 }
