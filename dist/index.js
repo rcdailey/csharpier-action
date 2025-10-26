@@ -31835,32 +31835,43 @@ function generateFormattingHunks(originalContent, formattedContent, filePath) {
     const hunks = [];
     for (const hunk of patch.hunks) {
         coreExports.debug(`Processing hunk: newStart=${hunk.newStart}, lines=${hunk.lines.length}`);
-        // Find the first line with a change
-        let firstChangeLine = hunk.newStart;
-        let foundChange = false;
-        let currentLine = hunk.newStart;
-        for (const line of hunk.lines) {
-            const isContext = line.startsWith(' ');
+        // Find the first and last lines with changes, tracking line numbers
+        let firstChangeIndex = -1;
+        let lastChangeIndex = -1;
+        hunk.newStart;
+        for (let i = 0; i < hunk.lines.length; i++) {
+            const line = hunk.lines[i];
+            line.startsWith(' ');
             const isAddition = line.startsWith('+');
             const isDeletion = line.startsWith('-');
-            if ((isAddition || isDeletion) && !foundChange) {
-                firstChangeLine = currentLine;
-                foundChange = true;
-                break;
-            }
-            if (isContext || isAddition) {
-                currentLine++;
+            if (isAddition || isDeletion) {
+                if (firstChangeIndex === -1) {
+                    firstChangeIndex = i;
+                }
+                lastChangeIndex = i;
             }
         }
-        if (!foundChange) {
+        if (firstChangeIndex === -1) {
             continue;
         }
-        // Collect formatted content (context + additions only)
-        const formattedLines = [];
-        for (const line of hunk.lines) {
+        // Calculate the line number where the first change occurs
+        let firstChangeLine = hunk.newStart;
+        for (let i = 0; i < firstChangeIndex; i++) {
+            const line = hunk.lines[i];
             if (line.startsWith(' ') || line.startsWith('+')) {
+                firstChangeLine++;
+            }
+        }
+        // Collect only the changed section (additions only, no context)
+        const formattedLines = [];
+        for (let i = firstChangeIndex; i <= lastChangeIndex; i++) {
+            const line = hunk.lines[i];
+            if (line.startsWith('+')) {
                 formattedLines.push(line.substring(1));
             }
+        }
+        if (formattedLines.length === 0) {
+            continue;
         }
         hunks.push({
             lineNumber: firstChangeLine,

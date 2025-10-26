@@ -262,11 +262,12 @@ public class AnotherClass
       }
       mockAPI.setFiles([file])
 
-      const commentBody = `<!-- csharpier-action -->
+      // Expected comment body shows only the changed line, not context
+      const expectedCommentBody = `<!-- csharpier-action -->
 This section is not formatted according to CSharpier rules.
 
 \`\`\`suggestion
-${formattedContent}
+class Test
 \`\`\`
 
 Run \`dotnet csharpier format ${testFilePath}\` to fix the formatting.`
@@ -275,7 +276,7 @@ Run \`dotnet csharpier format ${testFilePath}\` to fix the formatting.`
         id: 100,
         path: testFilePath,
         line: 1,
-        body: commentBody
+        body: expectedCommentBody
       }
       mockAPI.setComments([existingComment])
 
@@ -289,7 +290,7 @@ Run \`dotnet csharpier format ${testFilePath}\` to fix the formatting.`
           {
             id: 100,
             path: testFilePath,
-            body: commentBody,
+            body: expectedCommentBody,
             isResolved: false,
             line: 1
           }
@@ -300,7 +301,7 @@ Run \`dotnet csharpier format ${testFilePath}\` to fix the formatting.`
       expect(comments).toHaveLength(1)
       // Old comment deleted, new one created with ID 1
       expect(comments[0].id).toBe(1)
-      expect(comments[0].body).toBe(commentBody)
+      expect(comments[0].body).toBe(expectedCommentBody)
     })
   })
 

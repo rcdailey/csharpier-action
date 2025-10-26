@@ -9,6 +9,7 @@ After changes:
 
 - ALWAYS run `npm run bundle`
 - ALWAYS execute tests with `npm test`
+- NEVER run git add, commit, or push commands without explicit instruction.
 
 Testing Requirements:
 
