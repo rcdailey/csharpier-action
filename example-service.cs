@@ -1,4 +1,4 @@
-namespace ExampleApp.Services
+namespace  ExampleApp.Services
 {
     public class UserService
     {
@@ -30,7 +30,7 @@ namespace ExampleApp.Services
 
         public async Task<bool> UpdateUserAsync(User user)
         {
-            if (user == null)
+            if(user==null)
             {
                 throw new ArgumentNullException(nameof(user));
             }
