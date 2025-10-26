@@ -9,9 +9,11 @@ After changes:
 
 - ALWAYS run `npm run bundle`
 - ALWAYS execute tests with `npm test`
+- NEVER run git add, commit, or push commands without explicit instruction.
 
 Testing Requirements:
 
+- MUST use red, green, refactor approach
 - Test BEHAVIOR, not implementation
 - Integration test approach utilizes ports and adapters (hexagonal architecture)
 - No overlap between new or existing tests

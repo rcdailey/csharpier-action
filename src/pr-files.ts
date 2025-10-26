@@ -4,7 +4,18 @@
 
 import * as core from '@actions/core'
 import * as github from '@actions/github'
-import type { PRFile } from './types.js'
+
+/**
+ * Represents a file changed in a pull request
+ */
+export interface PRFile {
+  /** Path to the file relative to repo root */
+  path: string
+  /** SHA of the file */
+  sha: string
+  /** File status (added, modified, removed, etc.) */
+  status: string
+}
 
 /**
  * Get C# files that were changed in the pull request

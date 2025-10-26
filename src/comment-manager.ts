@@ -4,7 +4,6 @@
 
 import * as core from '@actions/core'
 import * as github from '@actions/github'
-import type { ViolationComment } from './types.js'
 import type { GitHubAPI } from './github-api.js'
 import { readFile } from 'fs/promises'
 import { structuredPatch } from 'diff'
@@ -12,6 +11,22 @@ import parseDiff from 'parse-diff'
 
 /** Marker used to identify comments created by this action */
 const COMMENT_MARKER = '<!-- csharpier-action -->'
+
+/**
+ * A review comment for a formatting violation
+ */
+export interface ViolationComment {
+  /** Comment ID */
+  id: number
+  /** File path the comment is on */
+  path: string
+  /** Comment body */
+  body: string
+  /** Whether the comment is resolved */
+  isResolved: boolean
+  /** Line number where the comment is placed */
+  line: number
+}
 
 interface FormattingHunk {
   /** Starting line number in the formatted file */
@@ -54,110 +69,63 @@ function generateFormattingHunks(
       `Processing hunk: newStart=${hunk.newStart}, lines=${hunk.lines.length}`
     )
 
-    // Track all changes in this hunk as separate sub-hunks
-    // This allows us to handle files where one hunk has changes both
-    // inside and outside the PR diff range
-    const changes: Array<{
-      startLine: number // Line number where the change block starts (in NEW file)
-      startIndex: number // Index in hunk.lines array
-      endIndex: number // Index in hunk.lines array
-    }> = []
-
+    // Find the first and last lines with changes, tracking line numbers
+    let firstChangeIndex = -1
+    let lastChangeIndex = -1
     let currentLine = hunk.newStart
-    let inChangeBlock = false
-    let changeStartIndex = 0
-    let changeStartLine = 0
 
     for (let i = 0; i < hunk.lines.length; i++) {
       const line = hunk.lines[i]
       const isContext = line.startsWith(' ')
       const isAddition = line.startsWith('+')
       const isDeletion = line.startsWith('-')
-      const isChange = isAddition || isDeletion
 
-      if (isChange && !inChangeBlock) {
-        // Start of a new change block
-        inChangeBlock = true
-        changeStartIndex = i
-        changeStartLine = currentLine
-      } else if (!isChange && inChangeBlock) {
-        // End of change block - save it
-        changes.push({
-          startLine: changeStartLine,
-          startIndex: changeStartIndex,
-          endIndex: i - 1
-        })
-        inChangeBlock = false
+      if (isAddition || isDeletion) {
+        if (firstChangeIndex === -1) {
+          firstChangeIndex = i
+        }
+        lastChangeIndex = i
       }
 
-      // Only count lines that appear in the new file
       if (isContext || isAddition) {
         currentLine++
       }
     }
 
-    // Handle case where change block extends to end of hunk
-    if (inChangeBlock) {
-      changes.push({
-        startLine: changeStartLine,
-        startIndex: changeStartIndex,
-        endIndex: hunk.lines.length - 1
-      })
+    if (firstChangeIndex === -1) {
+      continue
     }
 
-    // For each change block, create a separate hunk with context
-    for (const change of changes) {
-      // Include context lines before and after
-      const contextBefore = 3
-      const contextAfter = 3
-      const startIndex = Math.max(0, change.startIndex - contextBefore)
-      const endIndex = Math.min(
-        hunk.lines.length - 1,
-        change.endIndex + contextAfter
-      )
-
-      // Find the first actual change line within the context window
-      // (this is where we'll place the comment)
-      let firstChangeLineInSubHunk = change.startLine
-      let foundChange = false
-
-      for (let i = startIndex; i <= endIndex; i++) {
-        const line = hunk.lines[i]
-        const isChange = line.startsWith('+') || line.startsWith('-')
-
-        if (isChange && !foundChange) {
-          // Calculate line number at this position
-          let lineNum = hunk.newStart
-          for (let j = 0; j < i; j++) {
-            const l = hunk.lines[j]
-            if (l.startsWith(' ') || l.startsWith('+')) {
-              lineNum++
-            }
-          }
-          firstChangeLineInSubHunk = lineNum
-          foundChange = true
-          break
-        }
+    // Calculate the line number where the first change occurs
+    let firstChangeLine = hunk.newStart
+    for (let i = 0; i < firstChangeIndex; i++) {
+      const line = hunk.lines[i]
+      if (line.startsWith(' ') || line.startsWith('+')) {
+        firstChangeLine++
       }
-
-      // Collect formatted content for this sub-hunk
-      const formattedLines: string[] = []
-      for (let i = startIndex; i <= endIndex; i++) {
-        const line = hunk.lines[i]
-        if (line.startsWith(' ') || line.startsWith('+')) {
-          formattedLines.push(line.substring(1))
-        }
-      }
-
-      hunks.push({
-        lineNumber: firstChangeLineInSubHunk,
-        content: formattedLines.join('\n'),
-        originalLineRange: {
-          start: hunk.oldStart,
-          end: hunk.oldStart + hunk.oldLines - 1
-        }
-      })
     }
+
+    // Collect only the changed section (additions only, no context)
+    const formattedLines: string[] = []
+    for (let i = firstChangeIndex; i <= lastChangeIndex; i++) {
+      const line = hunk.lines[i]
+      if (line.startsWith('+')) {
+        formattedLines.push(line.substring(1))
+      }
+    }
+
+    if (formattedLines.length === 0) {
+      continue
+    }
+
+    hunks.push({
+      lineNumber: firstChangeLine,
+      content: formattedLines.join('\n'),
+      originalLineRange: {
+        start: hunk.oldStart,
+        end: hunk.oldStart + hunk.oldLines - 1
+      }
+    })
   }
 
   return hunks
@@ -294,7 +262,29 @@ export async function createViolationComments(
 
     core.debug(`Found ${hunks.length} formatting hunk(s) in ${filePath}`)
 
-    // Create or update comments for each hunk
+    // Delete all existing unresolved comments for this file
+    // This ensures we don't create duplicates when line numbers change
+    const unresolvedComments = existingComments.filter((c) => !c.isResolved)
+    if (unresolvedComments.length > 0) {
+      core.debug(
+        `Deleting ${unresolvedComments.length} existing comment(s) for ${filePath}`
+      )
+      for (const comment of unresolvedComments) {
+        try {
+          await api.deleteReviewComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            comment_id: comment.id
+          })
+        } catch (error) {
+          core.warning(
+            `Failed to delete comment ${comment.id}: ${error instanceof Error ? error.message : String(error)}`
+          )
+        }
+      }
+    }
+
+    // Create comments for each hunk
     for (const hunk of hunks) {
       // Find where this hunk appears in the PR diff
       const lineNumber = findLineInPRDiff(file.patch, hunk.lineNumber)
@@ -308,7 +298,7 @@ export async function createViolationComments(
 
       // Create comment body with suggestion block
       const body = `${COMMENT_MARKER}
-This section is not formatted according to CSharpier rules.
+**CSharpier**: This section is not formatted correctly.
 
 \`\`\`suggestion
 ${hunk.content}
@@ -316,39 +306,17 @@ ${hunk.content}
 
 Run \`dotnet csharpier format ${filePath}\` to fix the formatting.`
 
-      // Check if we already have a comment at this line
-      const existingComment = existingComments.find(
-        (c) => c.line === lineNumber && !c.isResolved
-      )
-
-      if (existingComment) {
-        if (existingComment.body === body) {
-          core.debug(
-            `Comment at line ${lineNumber} in ${filePath} unchanged, skipping`
-          )
-          continue
-        }
-
-        core.debug(`Updating comment at line ${lineNumber} in ${filePath}`)
-        await api.updateReviewComment({
-          owner: context.repo.owner,
-          repo: context.repo.repo,
-          comment_id: existingComment.id,
-          body
-        })
-      } else {
-        core.debug(`Creating comment at line ${lineNumber} in ${filePath}`)
-        await api.createReviewComment({
-          owner: context.repo.owner,
-          repo: context.repo.repo,
-          pull_number: pullNumber,
-          body,
-          commit_id: commitSha,
-          path: filePath,
-          line: lineNumber,
-          side: 'RIGHT'
-        })
-      }
+      core.debug(`Creating comment at line ${lineNumber} in ${filePath}`)
+      await api.createReviewComment({
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        pull_number: pullNumber,
+        body,
+        commit_id: commitSha,
+        path: filePath,
+        line: lineNumber,
+        side: 'RIGHT'
+      })
     }
   } catch (error) {
     core.warning(

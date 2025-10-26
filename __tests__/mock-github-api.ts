@@ -4,12 +4,12 @@
 
 import type {
   GitHubAPI,
-  PRFile,
   ReviewComment,
   CreateReviewCommentParams,
-  UpdateReviewCommentParams,
-  CreateReplyParams
+  CreateReplyParams,
+  DeleteReviewCommentParams
 } from '../src/github-api.js'
+import type { PRFile } from '../src/pr-files.js'
 
 /**
  * In-memory mock implementation of GitHubAPI for testing
@@ -52,17 +52,17 @@ export class MockGitHubAPI implements GitHubAPI {
     this.comments.push(comment)
   }
 
-  async updateReviewComment(params: UpdateReviewCommentParams): Promise<void> {
-    const comment = this.comments.find((c) => c.id === params.comment_id)
-    if (comment) {
-      comment.body = params.body
-    }
-  }
-
   async createReplyForReviewComment(params: CreateReplyParams): Promise<void> {
     const comment = this.comments.find((c) => c.id === params.comment_id)
     if (comment) {
       comment.in_reply_to_id = params.comment_id
+    }
+  }
+
+  async deleteReviewComment(params: DeleteReviewCommentParams): Promise<void> {
+    const index = this.comments.findIndex((c) => c.id === params.comment_id)
+    if (index !== -1) {
+      this.comments.splice(index, 1)
     }
   }
 }

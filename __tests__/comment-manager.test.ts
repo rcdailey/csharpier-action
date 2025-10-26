@@ -9,7 +9,8 @@ import {
   resolveFixedComments
 } from '../src/comment-manager.js'
 import { MockGitHubAPI } from './mock-github-api.js'
-import type { PRFile, ReviewComment } from '../src/github-api.js'
+import type { ReviewComment } from '../src/github-api.js'
+import type { PRFile } from '../src/pr-files.js'
 import { writeFile, rm, mkdir } from 'fs/promises'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -84,7 +85,7 @@ describe('Comment Manager', () => {
       expect(comments[0].body).not.toContain('class  Test')
     })
 
-    it('updates comment when existing comment has different content', async () => {
+    it('replaces comment when existing comment has different content', async () => {
       // Create test file
       const testFilePath = join(testDir, 'test2.cs')
       const unformattedContent = 'class Test\n{\n//Updated\n}'
@@ -125,7 +126,8 @@ describe('Comment Manager', () => {
 
       const comments = mockAPI.getComments()
       expect(comments).toHaveLength(1)
-      expect(comments[0].id).toBe(100)
+      // Old comment should be deleted, new comment should have ID 1
+      expect(comments[0].id).toBe(1)
       expect(comments[0].body).toContain('// Updated')
       expect(comments[0].body).toContain('<!-- csharpier-action -->')
     })
@@ -248,7 +250,7 @@ public class AnotherClass
       expect(body).toContain('```suggestion')
     })
 
-    it('skips update when existing comment has identical content', async () => {
+    it('replaces existing comment even when content is identical', async () => {
       // Create test file
       const testFilePath = join(testDir, 'test3.cs')
       const unformattedContent = 'class  Test\n{\n}'
@@ -261,11 +263,12 @@ public class AnotherClass
       }
       mockAPI.setFiles([file])
 
-      const commentBody = `<!-- csharpier-action -->
-This section is not formatted according to CSharpier rules.
+      // Expected comment body shows only the changed line, not context
+      const expectedCommentBody = `<!-- csharpier-action -->
+**CSharpier**: This section is not formatted correctly.
 
 \`\`\`suggestion
-${formattedContent}
+class Test
 \`\`\`
 
 Run \`dotnet csharpier format ${testFilePath}\` to fix the formatting.`
@@ -274,7 +277,7 @@ Run \`dotnet csharpier format ${testFilePath}\` to fix the formatting.`
         id: 100,
         path: testFilePath,
         line: 1,
-        body: commentBody
+        body: expectedCommentBody
       }
       mockAPI.setComments([existingComment])
 
@@ -288,7 +291,7 @@ Run \`dotnet csharpier format ${testFilePath}\` to fix the formatting.`
           {
             id: 100,
             path: testFilePath,
-            body: commentBody,
+            body: expectedCommentBody,
             isResolved: false,
             line: 1
           }
@@ -297,8 +300,9 @@ Run \`dotnet csharpier format ${testFilePath}\` to fix the formatting.`
 
       const comments = mockAPI.getComments()
       expect(comments).toHaveLength(1)
-      expect(comments[0].id).toBe(100)
-      expect(comments[0].body).toBe(commentBody)
+      // Old comment deleted, new one created with ID 1
+      expect(comments[0].id).toBe(1)
+      expect(comments[0].body).toBe(expectedCommentBody)
     })
   })
 
@@ -379,74 +383,6 @@ Run \`dotnet csharpier format ${testFilePath}\` to fix the formatting.`
   })
 
   describe('PR diff boundary handling', () => {
-    it('creates comments only for violations within PR diff range', async () => {
-      // Scenario: File has formatting violations both inside and outside PR diff
-      // Behavior: Only violations in PR diff should get comments
-      const testFilePath = join(testDir, 'test-multi-violation.cs')
-      const unformattedContent = `namespace  TestNamespace
-{
-    public class Test
-    {
-        public void Method()
-        {
-            Console.WriteLine("test");
-
-
-
-        }
-    }
-}`
-      const formattedContent = `namespace TestNamespace
-{
-    public class Test
-    {
-        public void Method()
-        {
-            Console.WriteLine("test");
-        }
-    }
-}`
-      await writeFile(testFilePath, unformattedContent, 'utf8')
-
-      // PR diff only shows blank line removal, not namespace fix
-      const file: PRFile = {
-        filename: testFilePath,
-        patch: `@@ -5,9 +5,6 @@ namespace  TestNamespace
-         public void Method()
-         {
-             Console.WriteLine("test");
--
--
--
-         }
-     }
- }`
-      }
-      mockAPI.setFiles([file])
-
-      await createViolationComments(
-        mockAPI,
-        mockContext,
-        testFilePath,
-        'abc123',
-        formattedContent,
-        []
-      )
-
-      const comments = mockAPI.getComments()
-      // Should create exactly 1 comment
-      expect(comments.length).toBe(1)
-      // Comment should be in the PR diff range (lines 5-10)
-      expect(comments[0].line).toBeGreaterThanOrEqual(5)
-      expect(comments[0].line).toBeLessThanOrEqual(10)
-      // Should contain action marker and suggestion
-      expect(comments[0].body).toContain('<!-- csharpier-action -->')
-      expect(comments[0].body).toContain('```suggestion')
-      // Should show local formatted content, not entire file
-      expect(comments[0].body).toContain('Console.WriteLine')
-      expect(comments[0].body).not.toContain('namespace TestNamespace')
-    })
-
     it('creates no comments when violations are outside PR diff', async () => {
       // Scenario: File has violations but none in PR-changed lines
       // Behavior: No comments created

@@ -32,14 +32,6 @@ export interface CreateReviewCommentParams {
   side: string
 }
 
-/** Parameters for updating a review comment */
-export interface UpdateReviewCommentParams {
-  owner: string
-  repo: string
-  comment_id: number
-  body: string
-}
-
 /** Parameters for creating a reply to a review comment */
 export interface CreateReplyParams {
   owner: string
@@ -47,6 +39,13 @@ export interface CreateReplyParams {
   pull_number: number
   comment_id: number
   body: string
+}
+
+/** Parameters for deleting a review comment */
+export interface DeleteReviewCommentParams {
+  owner: string
+  repo: string
+  comment_id: number
 }
 
 /**
@@ -70,11 +69,11 @@ export interface GitHubAPI {
   /** Create a new review comment */
   createReviewComment(params: CreateReviewCommentParams): Promise<void>
 
-  /** Update an existing review comment */
-  updateReviewComment(params: UpdateReviewCommentParams): Promise<void>
-
   /** Create a reply to an existing review comment */
   createReplyForReviewComment(params: CreateReplyParams): Promise<void>
+
+  /** Delete a review comment */
+  deleteReviewComment(params: DeleteReviewCommentParams): Promise<void>
 }
 
 /**
@@ -124,15 +123,6 @@ export class OctokitGitHubAPI implements GitHubAPI {
     })
   }
 
-  async updateReviewComment(params: UpdateReviewCommentParams): Promise<void> {
-    await this.octokit.rest.pulls.updateReviewComment({
-      owner: params.owner,
-      repo: params.repo,
-      comment_id: params.comment_id,
-      body: params.body
-    })
-  }
-
   async createReplyForReviewComment(params: CreateReplyParams): Promise<void> {
     await this.octokit.rest.pulls.createReplyForReviewComment({
       owner: params.owner,
@@ -140,6 +130,14 @@ export class OctokitGitHubAPI implements GitHubAPI {
       pull_number: params.pull_number,
       comment_id: params.comment_id,
       body: params.body
+    })
+  }
+
+  async deleteReviewComment(params: DeleteReviewCommentParams): Promise<void> {
+    await this.octokit.rest.pulls.deleteReviewComment({
+      owner: params.owner,
+      repo: params.repo,
+      comment_id: params.comment_id
     })
   }
 }

@@ -31835,93 +31835,52 @@ function generateFormattingHunks(originalContent, formattedContent, filePath) {
     const hunks = [];
     for (const hunk of patch.hunks) {
         coreExports.debug(`Processing hunk: newStart=${hunk.newStart}, lines=${hunk.lines.length}`);
-        // Track all changes in this hunk as separate sub-hunks
-        // This allows us to handle files where one hunk has changes both
-        // inside and outside the PR diff range
-        const changes = [];
-        let currentLine = hunk.newStart;
-        let inChangeBlock = false;
-        let changeStartIndex = 0;
-        let changeStartLine = 0;
+        // Find the first and last lines with changes, tracking line numbers
+        let firstChangeIndex = -1;
+        let lastChangeIndex = -1;
+        hunk.newStart;
         for (let i = 0; i < hunk.lines.length; i++) {
             const line = hunk.lines[i];
-            const isContext = line.startsWith(' ');
+            line.startsWith(' ');
             const isAddition = line.startsWith('+');
             const isDeletion = line.startsWith('-');
-            const isChange = isAddition || isDeletion;
-            if (isChange && !inChangeBlock) {
-                // Start of a new change block
-                inChangeBlock = true;
-                changeStartIndex = i;
-                changeStartLine = currentLine;
-            }
-            else if (!isChange && inChangeBlock) {
-                // End of change block - save it
-                changes.push({
-                    startLine: changeStartLine,
-                    startIndex: changeStartIndex,
-                    endIndex: i - 1
-                });
-                inChangeBlock = false;
-            }
-            // Only count lines that appear in the new file
-            if (isContext || isAddition) {
-                currentLine++;
+            if (isAddition || isDeletion) {
+                if (firstChangeIndex === -1) {
+                    firstChangeIndex = i;
+                }
+                lastChangeIndex = i;
             }
         }
-        // Handle case where change block extends to end of hunk
-        if (inChangeBlock) {
-            changes.push({
-                startLine: changeStartLine,
-                startIndex: changeStartIndex,
-                endIndex: hunk.lines.length - 1
-            });
+        if (firstChangeIndex === -1) {
+            continue;
         }
-        // For each change block, create a separate hunk with context
-        for (const change of changes) {
-            // Include context lines before and after
-            const contextBefore = 3;
-            const contextAfter = 3;
-            const startIndex = Math.max(0, change.startIndex - contextBefore);
-            const endIndex = Math.min(hunk.lines.length - 1, change.endIndex + contextAfter);
-            // Find the first actual change line within the context window
-            // (this is where we'll place the comment)
-            let firstChangeLineInSubHunk = change.startLine;
-            let foundChange = false;
-            for (let i = startIndex; i <= endIndex; i++) {
-                const line = hunk.lines[i];
-                const isChange = line.startsWith('+') || line.startsWith('-');
-                if (isChange && !foundChange) {
-                    // Calculate line number at this position
-                    let lineNum = hunk.newStart;
-                    for (let j = 0; j < i; j++) {
-                        const l = hunk.lines[j];
-                        if (l.startsWith(' ') || l.startsWith('+')) {
-                            lineNum++;
-                        }
-                    }
-                    firstChangeLineInSubHunk = lineNum;
-                    foundChange = true;
-                    break;
-                }
+        // Calculate the line number where the first change occurs
+        let firstChangeLine = hunk.newStart;
+        for (let i = 0; i < firstChangeIndex; i++) {
+            const line = hunk.lines[i];
+            if (line.startsWith(' ') || line.startsWith('+')) {
+                firstChangeLine++;
             }
-            // Collect formatted content for this sub-hunk
-            const formattedLines = [];
-            for (let i = startIndex; i <= endIndex; i++) {
-                const line = hunk.lines[i];
-                if (line.startsWith(' ') || line.startsWith('+')) {
-                    formattedLines.push(line.substring(1));
-                }
-            }
-            hunks.push({
-                lineNumber: firstChangeLineInSubHunk,
-                content: formattedLines.join('\n'),
-                originalLineRange: {
-                    start: hunk.oldStart,
-                    end: hunk.oldStart + hunk.oldLines - 1
-                }
-            });
         }
+        // Collect only the changed section (additions only, no context)
+        const formattedLines = [];
+        for (let i = firstChangeIndex; i <= lastChangeIndex; i++) {
+            const line = hunk.lines[i];
+            if (line.startsWith('+')) {
+                formattedLines.push(line.substring(1));
+            }
+        }
+        if (formattedLines.length === 0) {
+            continue;
+        }
+        hunks.push({
+            lineNumber: firstChangeLine,
+            content: formattedLines.join('\n'),
+            originalLineRange: {
+                start: hunk.oldStart,
+                end: hunk.oldStart + hunk.oldLines - 1
+            }
+        });
     }
     return hunks;
 }
@@ -32019,7 +31978,25 @@ async function createViolationComments(api, context, filePath, commitSha, format
             return;
         }
         coreExports.debug(`Found ${hunks.length} formatting hunk(s) in ${filePath}`);
-        // Create or update comments for each hunk
+        // Delete all existing unresolved comments for this file
+        // This ensures we don't create duplicates when line numbers change
+        const unresolvedComments = existingComments.filter((c) => !c.isResolved);
+        if (unresolvedComments.length > 0) {
+            coreExports.debug(`Deleting ${unresolvedComments.length} existing comment(s) for ${filePath}`);
+            for (const comment of unresolvedComments) {
+                try {
+                    await api.deleteReviewComment({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        comment_id: comment.id
+                    });
+                }
+                catch (error) {
+                    coreExports.warning(`Failed to delete comment ${comment.id}: ${error instanceof Error ? error.message : String(error)}`);
+                }
+            }
+        }
+        // Create comments for each hunk
         for (const hunk of hunks) {
             // Find where this hunk appears in the PR diff
             const lineNumber = findLineInPRDiff(file.patch, hunk.lineNumber);
@@ -32029,41 +32006,24 @@ async function createViolationComments(api, context, filePath, commitSha, format
             }
             // Create comment body with suggestion block
             const body = `${COMMENT_MARKER}
-This section is not formatted according to CSharpier rules.
+**CSharpier**: This section is not formatted correctly.
 
 \`\`\`suggestion
 ${hunk.content}
 \`\`\`
 
 Run \`dotnet csharpier format ${filePath}\` to fix the formatting.`;
-            // Check if we already have a comment at this line
-            const existingComment = existingComments.find((c) => c.line === lineNumber && !c.isResolved);
-            if (existingComment) {
-                if (existingComment.body === body) {
-                    coreExports.debug(`Comment at line ${lineNumber} in ${filePath} unchanged, skipping`);
-                    continue;
-                }
-                coreExports.debug(`Updating comment at line ${lineNumber} in ${filePath}`);
-                await api.updateReviewComment({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    comment_id: existingComment.id,
-                    body
-                });
-            }
-            else {
-                coreExports.debug(`Creating comment at line ${lineNumber} in ${filePath}`);
-                await api.createReviewComment({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    pull_number: pullNumber,
-                    body,
-                    commit_id: commitSha,
-                    path: filePath,
-                    line: lineNumber,
-                    side: 'RIGHT'
-                });
-            }
+            coreExports.debug(`Creating comment at line ${lineNumber} in ${filePath}`);
+            await api.createReviewComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pullNumber,
+                body,
+                commit_id: commitSha,
+                path: filePath,
+                line: lineNumber,
+                side: 'RIGHT'
+            });
         }
     }
     catch (error) {
@@ -32144,14 +32104,6 @@ class OctokitGitHubAPI {
             side: params.side
         });
     }
-    async updateReviewComment(params) {
-        await this.octokit.rest.pulls.updateReviewComment({
-            owner: params.owner,
-            repo: params.repo,
-            comment_id: params.comment_id,
-            body: params.body
-        });
-    }
     async createReplyForReviewComment(params) {
         await this.octokit.rest.pulls.createReplyForReviewComment({
             owner: params.owner,
@@ -32159,6 +32111,13 @@ class OctokitGitHubAPI {
             pull_number: params.pull_number,
             comment_id: params.comment_id,
             body: params.body
+        });
+    }
+    async deleteReviewComment(params) {
+        await this.octokit.rest.pulls.deleteReviewComment({
+            owner: params.owner,
+            repo: params.repo,
+            comment_id: params.comment_id
         });
     }
 }
